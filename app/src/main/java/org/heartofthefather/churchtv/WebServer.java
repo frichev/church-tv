@@ -334,6 +334,11 @@ public final class WebServer {
                 fo.write(buf, 0, n);
                 remaining -= n;
             }
+        } catch (IOException e) {
+            // Connection dropped mid-upload: don't leave a half-written file on the TV.
+            //noinspection ResultOfMethodCallIgnored
+            part.delete();
+            throw e;
         }
         if (remaining > 0 || !part.renameTo(dest)) {
             //noinspection ResultOfMethodCallIgnored

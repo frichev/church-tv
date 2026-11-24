@@ -46,6 +46,14 @@ public final class Store {
         mediaDir = new File(ctx.getFilesDir(), "media");
         //noinspection ResultOfMethodCallIgnored
         mediaDir.mkdirs();
+        // Remove anything left over from an upload that was cut off (e.g. the TV lost power).
+        File[] leftovers = mediaDir.listFiles();
+        if (leftovers != null) for (File f : leftovers) {
+            if (f.isFile() && (f.getName().endsWith(".part") || Store.typeOf(f.getName()) == null)) {
+                //noinspection ResultOfMethodCallIgnored
+                f.delete();
+            }
+        }
         syncPlaylistWithDisk();
     }
 
