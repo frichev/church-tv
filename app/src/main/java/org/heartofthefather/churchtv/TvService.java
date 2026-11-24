@@ -57,6 +57,9 @@ public class TvService extends Service implements WebServer.Host, Store.Listener
         startForeground(1, buildNotification());
         store = Store.get(this);
         store.setListener(this);
+        int[] panel = AnnouncementView.panelSize(this);
+        Still4K.init(getFilesDir(), panel[0], panel[1]);
+        mediaChanged();
         web = new WebServer(this, store, this);
         web.start();
         registerReceiver(screenOn, new IntentFilter(Intent.ACTION_SCREEN_ON));
@@ -166,6 +169,11 @@ public class TvService extends Service implements WebServer.Host, Store.Listener
         return d;
     }
 
+    /** Make 4K still-video copies of new photos and remove copies of deleted ones. */
+    @Override public void mediaChanged() {
+        Still4K.convertAll(store.playlist(), store.mediaDir());
+    }
+
     @Override public void showTestPattern() {
         main.post(() -> {
             AnnouncementView v = AnnouncementView.current;
@@ -189,7 +197,8 @@ public class TvService extends Service implements WebServer.Host, Store.Listener
             int[] panel = AnnouncementView.panelSize(this);
             sb.append("TV panel ").append(panel[0]).append("x").append(panel[1]);
             sb.append(" · app screen ").append(dm.widthPixels).append("x").append(dm.heightPixels);
-            sb.append(" · photos and videos shown at ").append(panel[0]).append("x").append(panel[1]);
+            sb.append(" · videos shown at ").append(panel[0]).append("x").append(panel[1]);
+            sb.append(" · 4K photos: ").append(Still4K.status());
             if (Build.VERSION.SDK_INT >= 24 && d.getHdrCapabilities() != null) {
                 StringBuilder hdr = new StringBuilder();
                 for (int t : d.getHdrCapabilities().getSupportedHdrTypes()) {

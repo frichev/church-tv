@@ -41,6 +41,7 @@ public final class WebServer {
         /** Human-readable description of the TV's screen. */
         String displayInfo();
         void showTestPattern();
+        void mediaChanged();
         String diagnostics();
         String versionName();
     }
@@ -271,6 +272,7 @@ public final class WebServer {
             case "/api/delete":
                 drain(headers, in);
                 store.delete(q.get("name"));
+                host.mediaChanged();
                 ok(out);
                 return;
             case "/api/move":
@@ -347,6 +349,7 @@ public final class WebServer {
             return;
         }
         store.added(dest.getName());
+        host.mediaChanged();
         ok(out);
     }
 

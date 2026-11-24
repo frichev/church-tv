@@ -64,6 +64,7 @@ public class AnnouncementView extends FrameLayout {
     private Bitmap currentPhotoSmall;  // screen-sized copy, used as the "outgoing" picture
     private static final int NONE = 0, PHOTO = 1, VIDEO = 2;
     private int showing = NONE;
+    private boolean showingStill = false;   // a photo shown as a still 4K video
     private boolean running = false, paused = false;
     private int idx = -1;
     private String playlistKey = "";
@@ -193,6 +194,10 @@ public class AnnouncementView extends FrameLayout {
         if (!paused) return;
         paused = false;
         if (!running) return;
+        if (showing == VIDEO && showingStill) {
+            if (store.playlist().size() > 1) h.postDelayed(advance, store.imageSeconds() * 1000L);
+            return;
+        }
         if (showing == VIDEO && mp != null) {
             try { mp.start(); return; } catch (Exception ignored) { }
         }
@@ -234,6 +239,7 @@ public class AnnouncementView extends FrameLayout {
         photoSurf.setVisibility(GONE);
         currentPhoto = currentPhotoSmall = null;
         showing = NONE;
+        showingStill = false;
     }
 
     // ------------------------------------------------------------------ loop
@@ -277,9 +283,21 @@ public class AnnouncementView extends FrameLayout {
     }
 
     private void show(String name, boolean single, int gen, Runnable onShown) {
-        File f = new File(store.mediaDir(), name);
-        if ("video".equals(Store.typeOf(name))) playVideo(f, single, gen, onShown);
-        else showPhoto(f, single, gen, onShown);
+        final File f = new File(store.mediaDir(), name);
+        if ("video".equals(Store.typeOf(name))) { playVideo(f, single, gen, onShown, false, null); return; }
+        final File still = Still4K.videoFor(f);
+        if (still == null) { showPhoto(f, single, gen, onShown); return; }
+        // Photo has a 4K still-video version: show that through the 4K video hardware.
+        final int sw = Math.max(getWidth(), 1280), sh = Math.max(getHeight(), 720);
+        decoder.execute(() -> {
+            Bitmap smallSrc = decodeToFit(f, sw, sh);
+            final Bitmap small = smallSrc == null ? null : frame(smallSrc, sw, sh);
+            h.post(() -> {
+                if (gen != generation) return;
+                Diag.log("Photo " + f.getName() + ": showing in 4K through the video player");
+                playVideo(still, single, gen, onShown, true, small);
+            });
+        });
     }
 
     // ------------------------------------------------------------------ photos
@@ -311,6 +329,7 @@ public class AnnouncementView extends FrameLayout {
             currentPhoto = full;
             currentPhotoSmall = small;
             showing = PHOTO;
+            showingStill = false;
             if (old != null && old != full) old.recycle();
             onShown.run();
             afterShown.run();
@@ -434,19 +453,25 @@ public class AnnouncementView extends FrameLayout {
     // ------------------------------------------------------------------ 4K test pattern
 
     /** Shows a sharpness test for 30 seconds: 1-pixel stripes only look like stripes at true 4K. */
+    /**
+     * Plays a built-in 4K test video for 30 seconds through the video hardware (the path photos
+     * now use). Its 1-pixel stripes only look like stripes when the TV shows true 4K.
+     */
     public void showTestPattern() {
         if (!running) { Diag.log("Test pattern: announcements aren't showing right now (livestream mode?)"); return; }
         final int gen = ++generation;
         h.removeCallbacks(advance);
         black.animate().cancel();
         black.setAlpha(0f);
-        final int sw = Math.max(getWidth(), 1280), sh = Math.max(getHeight(), 720);
+        final File test = new File(getContext().getCacheDir(), "test4k.mp4");
         decoder.execute(() -> {
-            final Bitmap pat = testPattern(panelW, panelH);
-            final Bitmap small = frame(pat, sw, sh);
+            try (java.io.InputStream in = getContext().getAssets().open("test4k.mp4");
+                 java.io.FileOutputStream out = new java.io.FileOutputStream(test)) {
+                byte[] buf = new byte[65536]; int n;
+                while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+            } catch (Exception e) { Diag.log("Test pattern: couldn't prepare the test video: " + e); return; }
             h.post(() -> {
                 if (gen != generation) return;
-                // Same path a photo takes (dissolve over the outgoing picture), which is known to show.
                 snapshot(snap -> {
                     if (gen != generation) return;
                     overlay.animate().cancel();
@@ -454,14 +479,15 @@ public class AnnouncementView extends FrameLayout {
                     else overlay.setImageDrawable(new android.graphics.drawable.ColorDrawable(Color.BLACK));
                     overlay.setAlpha(1f);
                     overlay.setVisibility(VISIBLE);
-                    displayBitmap(pat, small, gen, () -> overlay.animate().alpha(0f).setDuration(600).withEndAction(() -> {
-                        if (gen != generation) return;
-                        overlay.setVisibility(GONE);
-                        overlay.setImageDrawable(null);
-                    }), () -> {
-                        Diag.log("Test pattern shown at " + panelW + "x" + panelH);
+                    playVideo(test, true, gen, () -> {
+                        Diag.log("Test pattern (4K video) shown");
+                        overlay.animate().alpha(0f).setDuration(600).withEndAction(() -> {
+                            if (gen != generation) return;
+                            overlay.setVisibility(GONE);
+                            overlay.setImageDrawable(null);
+                        });
                         h.postDelayed(() -> { if (gen == generation) restart(); }, 30000);
-                    });
+                    }, false, null);
                 });
             });
         });
@@ -503,9 +529,10 @@ public class AnnouncementView extends FrameLayout {
 
     // ------------------------------------------------------------------ video
 
-    private void playVideo(final File f, final boolean single, final int gen, final Runnable onShown) {
+    private void playVideo(final File f, final boolean single, final int gen, final Runnable onShown,
+                           final boolean still, final Bitmap stillSmall) {
         if (!videoSurfaceReady) {
-            pendingVideo = () -> playVideo(f, single, gen, onShown);
+            pendingVideo = () -> playVideo(f, single, gen, onShown, still, stillSmall);
             return;
         }
         releasePlayer();
@@ -522,15 +549,22 @@ public class AnnouncementView extends FrameLayout {
             shown[0] = true;
             photoSurf.setVisibility(GONE);   // uncover the video layer
             Bitmap old = currentPhoto;
-            currentPhoto = currentPhotoSmall = null;
+            currentPhoto = null;
+            currentPhotoSmall = still ? stillSmall : null;   // used as the outgoing picture in a dissolve
             if (old != null) old.recycle();
             showing = VIDEO;
+            showingStill = still;
+            if (still) {
+                // Hold the picture: stop on the first frame and move on after the photo time.
+                try { if (p.isPlaying()) p.pause(); } catch (Exception ignored) { }
+                if (!single) h.postDelayed(advance, store.imageSeconds() * 1000L);
+            }
             onShown.run();
         };
         try {
             p.setDisplay(videoSurf.getHolder());
             p.setDataSource(f.getAbsolutePath());
-            p.setLooping(single);
+            p.setLooping(single && !still);
             p.setScreenOnWhilePlaying(true);
             p.setOnVideoSizeChangedListener((x, vw, vh) -> {
                 Diag.log("Video player reports " + vw + "x" + vh);
@@ -546,7 +580,8 @@ public class AnnouncementView extends FrameLayout {
                 if (what == MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START) h.post(reveal);
                 return false;
             });
-            p.setOnCompletionListener(x -> { if (gen == generation) next(); });
+            // A still photo just stays on its last frame; a real video moves on.
+            p.setOnCompletionListener(x -> { if (gen == generation && !still) next(); });
             p.setOnErrorListener((x, what, extra) -> {
                 Log.w(TAG, "can't play " + f.getName() + " (" + what + "/" + extra + ")");
                 if (gen == generation) { reveal.run(); h.postDelayed(advance, 1000); }
@@ -618,7 +653,7 @@ public class AnnouncementView extends FrameLayout {
     private interface SnapCallback { void done(Bitmap b); }
 
     private void snapshot(final SnapCallback cb) {
-        if (showing == PHOTO) { cb.done(currentPhotoSmall); return; }
+        if (showing == PHOTO || (showing == VIDEO && showingStill && currentPhotoSmall != null)) { cb.done(currentPhotoSmall); return; }
         if (showing == VIDEO && Build.VERSION.SDK_INT >= 24 && videoSurf.getWidth() > 0 && getWidth() > 0) {
             try {
                 final Bitmap vb = Bitmap.createBitmap(videoSurf.getWidth(), videoSurf.getHeight(), Bitmap.Config.ARGB_8888);
