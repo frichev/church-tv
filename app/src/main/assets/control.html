@@ -145,7 +145,7 @@ function render() {
     $(id).classList.toggle('sel', (s.override || 'auto') === m);
   });
   $('permWarn').style.display = s.autoStartReady ? 'none' : 'block';
-  $('space').textContent = 'Free space on TV: ' + fmtSize(s.freeBytes);
+  $('space').textContent = 'Free space on TV: ' + fmtSize(s.freeBytes) + (s.display ? ' · ' + s.display : '');
 
   if (!settingsLoaded) {
     $('secs').value = s.imageSeconds; $('pb').value = s.playback;
@@ -174,7 +174,17 @@ function render() {
     var meta = document.createElement('div'); meta.className = 'meta';
     meta.innerHTML = '<div class="name"></div><div class="muted"></div>';
     meta.firstChild.textContent = (i + 1) + '. ' + it.name;
-    meta.lastChild.textContent = (it.type === 'image' ? 'Image · ' + s.imageSeconds + 's' : 'Video') + ' · ' + fmtSize(it.size);
+    meta.lastChild.textContent = (it.type === 'image' ? 'Photo · ' + s.imageSeconds + 's' : 'Video') +
+      (it.dims ? ' · ' + it.dims.replace('x', '×') : '') + ' · ' + fmtSize(it.size);
+    if (it.dims) {
+      var wh = it.dims.split('x').map(Number), big = Math.max(wh[0], wh[1]), small = Math.min(wh[0], wh[1]);
+      var q = document.createElement('span');
+      q.style.cssText = 'margin-left:8px;padding:1px 6px;border-radius:4px;font-size:12px;font-weight:600;';
+      if (big >= 3840 && small >= 2160) { q.textContent = '4K'; q.style.background = 'var(--ok)'; q.style.color = '#fff'; }
+      else if (big >= 1920 && small >= 1080) { q.textContent = 'HD — below 4K'; q.style.border = '1px solid var(--warn)'; q.style.color = 'var(--warn)'; }
+      else { q.textContent = 'Low resolution'; q.style.border = '1px solid var(--live)'; q.style.color = 'var(--live)'; }
+      meta.lastChild.appendChild(q);
+    }
     var c = document.createElement('div'); c.className = 'ctrls';
     c.innerHTML = '<button class="small" title="Move up">↑</button><button class="small" title="Move down">↓</button><button class="small danger" title="Delete">Delete</button>';
     var q = '?name=' + encodeURIComponent(it.name);

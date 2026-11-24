@@ -3,17 +3,23 @@ package org.heartofthefather.churchtv;
 import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Matrix;
-import android.graphics.SurfaceTexture;
+import android.graphics.Paint;
+import android.graphics.Rect;
 import android.media.MediaPlayer;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
+import android.view.Display;
+import android.view.Gravity;
 import android.view.Surface;
-import android.view.TextureView;
+import android.view.SurfaceHolder;
+import android.view.SurfaceView;
 import android.view.View;
+import android.view.WindowManager;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 
@@ -23,36 +29,43 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * Plays the announcement loop with the TV's own (hardware) video player, so phone videos
- * in HEVC/H.265 work, with cross-dissolve or fade-through-black transitions.
+ * Plays the announcement loop at the TV panel's full resolution (4K on a 4K TV).
  *
- * Layers, bottom to top:
- *   image   – the current photo
- *   video   – TextureView the current video draws into
- *   overlay – frozen picture of the outgoing item, faded out for a cross dissolve
- *   black   – faded in/out for "fade through black"
+ * Fire TV draws normal app screens at 1920x1080 and stretches them. Only SurfaceViews
+ * are composed at the panel's real resolution, so photos and videos go there:
+ *
+ *   videoSurf – the TV's hardware video player draws here (handles 4K HEVC/HDR phone video)
+ *   photoSurf – photos are drawn here into a 3840x2160 buffer (sits above videoSurf)
+ *   overlay   – (normal 1080p layer) the outgoing picture, faded out for a cross dissolve
+ *   black     – (normal layer) faded in/out for "fade through black"
  */
-public class AnnouncementView extends FrameLayout implements TextureView.SurfaceTextureListener {
+public class AnnouncementView extends FrameLayout {
 
     private static final String TAG = "ChurchTV.Ann";
+    /** Resolution photos are drawn at; reported on the control page. */
+    public static volatile String photoResolution = "?";
 
     private final Store store;
     private final Handler h = new Handler(Looper.getMainLooper());
     private final ExecutorService decoder = Executors.newSingleThreadExecutor();
+    private final int panelW, panelH;
 
-    private final ImageView image, overlay;
-    private final TextureView video;
+    private final SurfaceView videoSurf, photoSurf;
+    private final ImageView overlay;
     private final View black;
 
-    private Surface surface;
+    private boolean videoSurfaceReady = false, photoSurfaceReady = false;
+    private Runnable pendingVideo, pendingPhoto;
+
     private MediaPlayer mp;
-    private Bitmap currentBitmap;
-    private boolean showingVideo = false, showingSomething = false;
+    private Bitmap currentPhoto;       // full-resolution photo currently on photoSurf
+    private Bitmap currentPhotoSmall;  // screen-sized copy, used as the "outgoing" picture
+    private static final int NONE = 0, PHOTO = 1, VIDEO = 2;
+    private int showing = NONE;
     private boolean running = false, paused = false;
     private int idx = -1;
     private String playlistKey = "";
-    private int generation = 0;              // invalidates callbacks from older items
-    private Runnable pendingVideo;           // waiting for the video surface
+    private int generation = 0;
 
     private final Runnable advance = this::next;
     private final Runnable watchPlaylist = new Runnable() {
@@ -68,17 +81,42 @@ public class AnnouncementView extends FrameLayout implements TextureView.Surface
         this.store = store;
         setBackgroundColor(Color.BLACK);
 
-        image = new ImageView(ctx);
-        image.setScaleType(ImageView.ScaleType.FIT_CENTER);
-        addView(image, new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
+        int[] panel = panelSize(ctx);
+        panelW = panel[0];
+        panelH = panel[1];
+        photoResolution = panelW + "x" + panelH;
 
-        video = new TextureView(ctx);
-        video.setSurfaceTextureListener(this);
-        video.setAlpha(0f);
-        addView(video, new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
+        videoSurf = new SurfaceView(ctx);
+        videoSurf.getHolder().addCallback(new SurfaceHolder.Callback() {
+            @Override public void surfaceCreated(SurfaceHolder holder) {
+                videoSurfaceReady = true;
+                if (pendingVideo != null) { Runnable r = pendingVideo; pendingVideo = null; r.run(); }
+            }
+            @Override public void surfaceChanged(SurfaceHolder holder, int f, int w, int hh) { }
+            @Override public void surfaceDestroyed(SurfaceHolder holder) {
+                videoSurfaceReady = false;
+                releasePlayer();
+            }
+        });
+        addView(videoSurf, new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT, Gravity.CENTER));
+
+        photoSurf = new SurfaceView(ctx);
+        photoSurf.setZOrderMediaOverlay(true);               // above the video surface
+        photoSurf.getHolder().setFixedSize(panelW, panelH);  // real 4K buffer on a 4K panel
+        photoSurf.getHolder().addCallback(new SurfaceHolder.Callback() {
+            @Override public void surfaceCreated(SurfaceHolder holder) { }
+            @Override public void surfaceChanged(SurfaceHolder holder, int f, int w, int hh) {
+                photoSurfaceReady = true;
+                if (pendingPhoto != null) { Runnable r = pendingPhoto; pendingPhoto = null; r.run(); }
+                else if (showing == PHOTO && currentPhoto != null) drawPhoto(currentPhoto);
+            }
+            @Override public void surfaceDestroyed(SurfaceHolder holder) { photoSurfaceReady = false; }
+        });
+        photoSurf.setVisibility(GONE);
+        addView(photoSurf, new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
 
         overlay = new ImageView(ctx);
-        overlay.setScaleType(ImageView.ScaleType.FIT_XY);   // snapshot is already screen-sized
+        overlay.setScaleType(ImageView.ScaleType.FIT_XY);
         overlay.setVisibility(GONE);
         addView(overlay, new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
 
@@ -86,6 +124,24 @@ public class AnnouncementView extends FrameLayout implements TextureView.Surface
         black.setBackgroundColor(Color.BLACK);
         black.setAlpha(0f);
         addView(black, new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
+    }
+
+    /** The panel's physical resolution (e.g. 3840x2160), even though the app UI is 1920x1080. */
+    static int[] panelSize(Context ctx) {
+        int w = 1920, hh = 1080;
+        try {
+            Display d = ((WindowManager) ctx.getSystemService(Context.WINDOW_SERVICE)).getDefaultDisplay();
+            if (Build.VERSION.SDK_INT >= 23) {
+                for (Display.Mode m : d.getSupportedModes()) {
+                    int mw = Math.max(m.getPhysicalWidth(), m.getPhysicalHeight());
+                    int mh = Math.min(m.getPhysicalWidth(), m.getPhysicalHeight());
+                    if ((long) mw * mh > (long) w * hh) { w = mw; hh = mh; }
+                }
+            }
+        } catch (Throwable ignored) { }
+        // Never larger than 4K UHD; that's what a photo buffer needs on this TV.
+        if (w > 3840 || hh > 2160) { w = 3840; hh = 2160; }
+        return new int[]{w, hh};
     }
 
     // ------------------------------------------------------------------ control
@@ -114,11 +170,14 @@ public class AnnouncementView extends FrameLayout implements TextureView.Surface
         if (!paused) return;
         paused = false;
         if (!running) return;
-        if (showingVideo && mp != null) {
+        if (showing == VIDEO && mp != null) {
             try { mp.start(); return; } catch (Exception ignored) { }
         }
-        if (showingSomething && !showingVideo) h.postDelayed(advance, store.imageSeconds() * 1000L);
-        else next();
+        if (showing == PHOTO) {
+            if (store.playlist().size() > 1) h.postDelayed(advance, store.imageSeconds() * 1000L);
+        } else {
+            next();
+        }
     }
 
     public void release() {
@@ -142,18 +201,16 @@ public class AnnouncementView extends FrameLayout implements TextureView.Surface
     private void clearAll() {
         generation++;
         h.removeCallbacks(advance);
-        pendingVideo = null;
+        pendingVideo = pendingPhoto = null;
         releasePlayer();
-        image.animate().cancel();
         overlay.animate().cancel();
         black.animate().cancel();
-        image.setImageDrawable(null);
         overlay.setImageDrawable(null);
         overlay.setVisibility(GONE);
         black.setAlpha(0f);
-        video.setAlpha(0f);
-        currentBitmap = null;
-        showingVideo = showingSomething = false;
+        photoSurf.setVisibility(GONE);
+        currentPhoto = currentPhotoSmall = null;
+        showing = NONE;
     }
 
     // ------------------------------------------------------------------ loop
@@ -171,7 +228,7 @@ public class AnnouncementView extends FrameLayout implements TextureView.Surface
         final long ms = store.transitionMs();
         final int gen = ++generation;
 
-        if (!showingSomething || "none".equals(t) || ms <= 0) {
+        if (showing == NONE || "none".equals(t) || ms <= 0) {
             show(name, single, gen, () -> { });
         } else if ("black".equals(t)) {
             black.animate().cancel();
@@ -179,49 +236,147 @@ public class AnnouncementView extends FrameLayout implements TextureView.Surface
                 if (gen != generation) return;
                 show(name, single, gen, () -> black.animate().alpha(0f).setDuration(ms / 2));
             });
-        } else { // cross dissolve
-            Bitmap snap = snapshot();
-            if (snap != null) {
+        } else { // cross dissolve: freeze the outgoing picture on top, put the new one underneath, fade
+            snapshot(snap -> {
+                if (gen != generation) return;
                 overlay.animate().cancel();
-                overlay.setImageBitmap(snap);
+                if (snap != null) overlay.setImageBitmap(snap);
+                else overlay.setImageDrawable(new android.graphics.drawable.ColorDrawable(Color.BLACK));
                 overlay.setAlpha(1f);
                 overlay.setVisibility(VISIBLE);
-            }
-            show(name, single, gen, () -> overlay.animate().alpha(0f).setDuration(ms).withEndAction(() -> {
-                if (gen != generation) return;
-                overlay.setVisibility(GONE);
-                overlay.setImageDrawable(null);
-            }));
-        }
-    }
-
-    /** Puts the item on screen, then calls onShown once its first frame is visible. */
-    private void show(final String name, final boolean single, final int gen, final Runnable onShown) {
-        final File f = new File(store.mediaDir(), name);
-        if ("video".equals(Store.typeOf(name))) {
-            playVideo(f, single, gen, onShown);
-        } else {
-            final int w = Math.max(getWidth(), 1280), hgt = Math.max(getHeight(), 720);
-            decoder.execute(() -> {
-                final Bitmap bmp = decodeImage(f, w, hgt);
-                h.post(() -> {
+                show(name, single, gen, () -> overlay.animate().alpha(0f).setDuration(ms).withEndAction(() -> {
                     if (gen != generation) return;
-                    if (bmp == null) { h.postDelayed(advance, 1000); return; }
-                    releasePlayer();
-                    video.setAlpha(0f);
-                    showingVideo = false;
-                    currentBitmap = bmp;
-                    image.setImageBitmap(bmp);
-                    showingSomething = true;
-                    onShown.run();
-                    if (!single) h.postDelayed(advance, store.imageSeconds() * 1000L);
-                });
+                    overlay.setVisibility(GONE);
+                    overlay.setImageDrawable(null);
+                }));
             });
         }
     }
 
+    private void show(String name, boolean single, int gen, Runnable onShown) {
+        File f = new File(store.mediaDir(), name);
+        if ("video".equals(Store.typeOf(name))) playVideo(f, single, gen, onShown);
+        else showPhoto(f, single, gen, onShown);
+    }
+
+    // ------------------------------------------------------------------ photos
+
+    private void showPhoto(final File f, final boolean single, final int gen, final Runnable onShown) {
+        final int sw = Math.max(getWidth(), 1280), sh = Math.max(getHeight(), 720);
+        decoder.execute(() -> {
+            final Bitmap full = decodeToFit(f, panelW, panelH);
+            final Bitmap small = full == null ? null : frame(full, sw, sh);
+            h.post(() -> {
+                if (gen != generation) return;
+                if (full == null) { Log.w(TAG, "can't show " + f.getName()); h.postDelayed(advance, 1000); return; }
+                Runnable draw = () -> {
+                    if (gen != generation) return;
+                    drawPhoto(full);
+                    releasePlayer();                       // photo now covers the video layer
+                    Bitmap old = currentPhoto;
+                    currentPhoto = full;
+                    currentPhotoSmall = small;
+                    showing = PHOTO;
+                    if (old != null && old != full) old.recycle();
+                    onShown.run();
+                    if (!single) h.postDelayed(advance, store.imageSeconds() * 1000L);
+                };
+                if (photoSurf.getVisibility() == VISIBLE && photoSurfaceReady) draw.run();
+                else { pendingPhoto = draw; photoSurf.setVisibility(VISIBLE); }
+            });
+        });
+    }
+
+    /** Draws the photo centered, letterboxed in black, at the surface's full (4K) resolution. */
+    private void drawPhoto(Bitmap bmp) {
+        SurfaceHolder holder = photoSurf.getHolder();
+        Surface s = holder.getSurface();
+        if (s == null || !s.isValid()) return;
+        Canvas c = null;
+        boolean hw = false;
+        try {
+            if (Build.VERSION.SDK_INT >= 23) { c = s.lockHardwareCanvas(); hw = true; }
+            else c = holder.lockCanvas();
+        } catch (Throwable t) {
+            c = holder.lockCanvas();
+            hw = false;
+        }
+        if (c == null) return;
+        try {
+            c.drawColor(Color.BLACK);
+            int left = (panelW - bmp.getWidth()) / 2, top = (panelH - bmp.getHeight()) / 2;
+            c.drawBitmap(bmp, left, top, new Paint(Paint.FILTER_BITMAP_FLAG));
+        } finally {
+            if (hw) s.unlockCanvasAndPost(c); else holder.unlockCanvasAndPost(c);
+        }
+    }
+
+    /** Decode at the best quality that fits the panel (no cropping), applying the phone's rotation. */
+    static Bitmap decodeToFit(File f, int maxW, int maxH) {
+        try {
+            BitmapFactory.Options o = new BitmapFactory.Options();
+            o.inJustDecodeBounds = true;
+            BitmapFactory.decodeFile(f.getAbsolutePath(), o);
+            if (o.outWidth <= 0) return null;
+            int rot = exifRotation(f);
+            int srcW = rot % 180 == 0 ? o.outWidth : o.outHeight;
+            int srcH = rot % 180 == 0 ? o.outHeight : o.outWidth;
+            // Size the photo will have on screen (fit inside the panel, no cropping).
+            float fit = Math.min((float) maxW / srcW, (float) maxH / srcH);
+            int fitW = Math.round(srcW * fit), fitH = Math.round(srcH * fit);
+            // Decode at a power-of-two reduction that still has at least the on-screen size
+            // (saves memory on 48 MP+ photos), then do one smooth resize to the exact size.
+            int sample = 1;
+            while (srcW / (sample * 2) >= fitW && srcH / (sample * 2) >= fitH) sample *= 2;
+            BitmapFactory.Options d = new BitmapFactory.Options();
+            d.inSampleSize = sample;
+            d.inPreferredConfig = Bitmap.Config.ARGB_8888;
+            Bitmap b = BitmapFactory.decodeFile(f.getAbsolutePath(), d);
+            if (b == null) return null;
+            float scale = Math.min((float) maxW / (rot % 180 == 0 ? b.getWidth() : b.getHeight()),
+                                   (float) maxH / (rot % 180 == 0 ? b.getHeight() : b.getWidth()));
+            Matrix m = new Matrix();
+            if (rot != 0) m.postRotate(rot);
+            if (Math.abs(scale - 1f) > 0.001f) m.postScale(scale, scale);
+            if (m.isIdentity()) return b;
+            Bitmap out = Bitmap.createBitmap(b, 0, 0, b.getWidth(), b.getHeight(), m, true);
+            if (out != b) b.recycle();
+            return out;
+        } catch (Throwable t) {
+            Log.w(TAG, "can't decode " + f.getName(), t);
+            return null;
+        }
+    }
+
+    static int exifRotation(File f) {
+        if (Build.VERSION.SDK_INT < 24) return 0;
+        try {
+            android.media.ExifInterface ex = new android.media.ExifInterface(f.getAbsolutePath());
+            switch (ex.getAttributeInt(android.media.ExifInterface.TAG_ORIENTATION, 1)) {
+                case android.media.ExifInterface.ORIENTATION_ROTATE_90: return 90;
+                case android.media.ExifInterface.ORIENTATION_ROTATE_180: return 180;
+                case android.media.ExifInterface.ORIENTATION_ROTATE_270: return 270;
+            }
+        } catch (Exception ignored) { }
+        return 0;
+    }
+
+    /** A screen-sized (1080p) copy of what's on screen, for the dissolve. */
+    private static Bitmap frame(Bitmap src, int w, int hh) {
+        Bitmap out = Bitmap.createBitmap(w, hh, Bitmap.Config.ARGB_8888);
+        Canvas c = new Canvas(out);
+        c.drawColor(Color.BLACK);
+        float s = Math.min((float) w / src.getWidth(), (float) hh / src.getHeight());
+        int dw = Math.round(src.getWidth() * s), dh = Math.round(src.getHeight() * s);
+        Rect dst = new Rect((w - dw) / 2, (hh - dh) / 2, (w - dw) / 2 + dw, (hh - dh) / 2 + dh);
+        c.drawBitmap(src, null, dst, new Paint(Paint.FILTER_BITMAP_FLAG));
+        return out;
+    }
+
+    // ------------------------------------------------------------------ video
+
     private void playVideo(final File f, final boolean single, final int gen, final Runnable onShown) {
-        if (surface == null) {               // TextureView not ready yet; try when it is
+        if (!videoSurfaceReady) {
             pendingVideo = () -> playVideo(f, single, gen, onShown);
             return;
         }
@@ -232,31 +387,31 @@ public class AnnouncementView extends FrameLayout implements TextureView.Surface
         final Runnable reveal = () -> {
             if (shown[0] || gen != generation) return;
             shown[0] = true;
-            video.setAlpha(1f);
-            image.setImageDrawable(null);
-            currentBitmap = null;
-            showingVideo = true;
-            showingSomething = true;
+            photoSurf.setVisibility(GONE);   // uncover the video layer
+            Bitmap old = currentPhoto;
+            currentPhoto = currentPhotoSmall = null;
+            if (old != null) old.recycle();
+            showing = VIDEO;
             onShown.run();
         };
         try {
-            p.setSurface(surface);
+            p.setDisplay(videoSurf.getHolder());
             p.setDataSource(f.getAbsolutePath());
             p.setLooping(single);
-            p.setOnVideoSizeChangedListener((mpx, vw, vh) -> fitVideo(vw, vh));
-            p.setOnPreparedListener(mpx -> {
+            p.setScreenOnWhilePlaying(true);
+            p.setOnVideoSizeChangedListener((x, vw, vh) -> fitVideo(vw, vh));
+            p.setOnPreparedListener(x -> {
                 if (gen != generation) return;
-                fitVideo(mpx.getVideoWidth(), mpx.getVideoHeight());
-                if (!paused) mpx.start();
-                // Fallback in case the "first frame" signal never arrives.
-                h.postDelayed(reveal, 1500);
+                fitVideo(x.getVideoWidth(), x.getVideoHeight());
+                if (!paused) x.start();
+                h.postDelayed(reveal, 1500);   // fallback if the first-frame signal never comes
             });
-            p.setOnInfoListener((mpx, what, extra) -> {
+            p.setOnInfoListener((x, what, extra) -> {
                 if (what == MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START) h.post(reveal);
                 return false;
             });
-            p.setOnCompletionListener(mpx -> { if (gen == generation) next(); });
-            p.setOnErrorListener((mpx, what, extra) -> {
+            p.setOnCompletionListener(x -> { if (gen == generation) next(); });
+            p.setOnErrorListener((x, what, extra) -> {
                 Log.w(TAG, "can't play " + f.getName() + " (" + what + "/" + extra + ")");
                 if (gen == generation) { reveal.run(); h.postDelayed(advance, 1000); }
                 return true;
@@ -276,95 +431,42 @@ public class AnnouncementView extends FrameLayout implements TextureView.Surface
         }
     }
 
-    /** Letterbox the video inside the screen instead of stretching it. */
+    /** Size the video layer to the video's shape (letterbox) instead of stretching it. */
     private void fitVideo(int vw, int vh) {
-        int W = video.getWidth(), H = video.getHeight();
+        int W = getWidth(), H = getHeight();
         if (vw <= 0 || vh <= 0 || W <= 0 || H <= 0) return;
         float s = Math.min((float) W / vw, (float) H / vh);
-        Matrix m = new Matrix();
-        m.setScale(vw * s / W, vh * s / H, W / 2f, H / 2f);
-        video.setTransform(m);
+        int w = Math.round(vw * s), hh = Math.round(vh * s);
+        LayoutParams lp = (LayoutParams) videoSurf.getLayoutParams();
+        if (lp.width == w && lp.height == hh) return;
+        lp.width = w;
+        lp.height = hh;
+        lp.gravity = Gravity.CENTER;
+        videoSurf.setLayoutParams(lp);
     }
 
-    private Bitmap snapshot() {
-        try {
-            if (showingVideo) {
-                Bitmap b = video.getBitmap();
-                if (b == null) return null;
-                // getBitmap() ignores the letterbox transform; draw it the way it looks on screen.
-                Bitmap out = Bitmap.createBitmap(video.getWidth(), video.getHeight(), Bitmap.Config.ARGB_8888);
-                android.graphics.Canvas c = new android.graphics.Canvas(out);
-                c.drawColor(Color.BLACK);
-                c.drawBitmap(b, video.getTransform(null), new android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG));
-                return out;
+    // ------------------------------------------------------------------ snapshot for dissolves
+
+    private interface SnapCallback { void done(Bitmap b); }
+
+    private void snapshot(final SnapCallback cb) {
+        if (showing == PHOTO) { cb.done(currentPhotoSmall); return; }
+        if (showing == VIDEO && Build.VERSION.SDK_INT >= 24 && videoSurf.getWidth() > 0 && getWidth() > 0) {
+            try {
+                final Bitmap vb = Bitmap.createBitmap(videoSurf.getWidth(), videoSurf.getHeight(), Bitmap.Config.ARGB_8888);
+                android.view.PixelCopy.request(videoSurf, vb, result -> {
+                    if (result != android.view.PixelCopy.SUCCESS) { cb.done(null); return; }
+                    Bitmap full = Bitmap.createBitmap(getWidth(), getHeight(), Bitmap.Config.ARGB_8888);
+                    Canvas c = new Canvas(full);
+                    c.drawColor(Color.BLACK);
+                    c.drawBitmap(vb, videoSurf.getLeft(), videoSurf.getTop(), null);
+                    cb.done(full);
+                }, h);
+                return;
+            } catch (Throwable t) {
+                Log.w(TAG, "video snapshot failed", t);
             }
-            if (currentBitmap != null && getWidth() > 0) {
-                Bitmap out = Bitmap.createBitmap(getWidth(), getHeight(), Bitmap.Config.ARGB_8888);
-                android.graphics.Canvas c = new android.graphics.Canvas(out);
-                c.drawColor(Color.BLACK);
-                image.draw(c);
-                return out;
-            }
-        } catch (Throwable t) {
-            Log.w(TAG, "snapshot failed", t);
         }
-        return null;
+        cb.done(null);
     }
-
-    // ------------------------------------------------------------------ images
-
-    /** Decodes at about screen size and applies the phone's rotation (EXIF) so photos aren't sideways. */
-    static Bitmap decodeImage(File f, int maxW, int maxH) {
-        try {
-            BitmapFactory.Options o = new BitmapFactory.Options();
-            o.inJustDecodeBounds = true;
-            BitmapFactory.decodeFile(f.getAbsolutePath(), o);
-            if (o.outWidth <= 0) return null;
-            int rot = 0;
-            if (Build.VERSION.SDK_INT >= 24) {
-                try {
-                    android.media.ExifInterface ex = new android.media.ExifInterface(f.getAbsolutePath());
-                    switch (ex.getAttributeInt(android.media.ExifInterface.TAG_ORIENTATION, 1)) {
-                        case android.media.ExifInterface.ORIENTATION_ROTATE_90: rot = 90; break;
-                        case android.media.ExifInterface.ORIENTATION_ROTATE_180: rot = 180; break;
-                        case android.media.ExifInterface.ORIENTATION_ROTATE_270: rot = 270; break;
-                    }
-                } catch (Exception ignored) { }
-            }
-            int srcW = rot % 180 == 0 ? o.outWidth : o.outHeight;
-            int srcH = rot % 180 == 0 ? o.outHeight : o.outWidth;
-            int sample = 1;
-            while (srcW / (sample * 2) >= maxW || srcH / (sample * 2) >= maxH) sample *= 2;
-            BitmapFactory.Options d = new BitmapFactory.Options();
-            d.inSampleSize = sample;
-            Bitmap b = BitmapFactory.decodeFile(f.getAbsolutePath(), d);
-            if (b == null || rot == 0) return b;
-            Matrix m = new Matrix();
-            m.postRotate(rot);
-            return Bitmap.createBitmap(b, 0, 0, b.getWidth(), b.getHeight(), m, true);
-        } catch (Throwable t) {
-            Log.w(TAG, "can't decode " + f.getName(), t);
-            return null;
-        }
-    }
-
-    // ------------------------------------------------------------------ surface
-
-    @Override public void onSurfaceTextureAvailable(SurfaceTexture st, int w, int hh) {
-        surface = new Surface(st);
-        if (pendingVideo != null) { Runnable r = pendingVideo; pendingVideo = null; r.run(); }
-    }
-
-    @Override public void onSurfaceTextureSizeChanged(SurfaceTexture st, int w, int hh) {
-        if (mp != null) try { fitVideo(mp.getVideoWidth(), mp.getVideoHeight()); } catch (Exception ignored) { }
-    }
-
-    @Override public boolean onSurfaceTextureDestroyed(SurfaceTexture st) {
-        releasePlayer();
-        if (surface != null) surface.release();
-        surface = null;
-        return true;
-    }
-
-    @Override public void onSurfaceTextureUpdated(SurfaceTexture st) { }
 }

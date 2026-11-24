@@ -36,6 +36,10 @@ public final class WebServer {
         boolean autoStartReady();
         void checkLiveNow();
         void reloadPlayer();
+        /** e.g. "4032x3024", or null if unknown. */
+        String mediaDims(java.io.File f);
+        /** Human-readable description of the TV's screen. */
+        String displayInfo();
     }
 
     private static final String TAG = "ChurchTV.Web";
@@ -137,7 +141,17 @@ public final class WebServer {
             if (path.equals("/") || path.equals("/index.html")) { asset(out, "control.html", head); return; }
             if (path.equals("/player")) { asset(out, "player.html", head); return; }
             if (path.equals("/api/state")) {
-                json(out, store.stateJson(host.controlUrl(), host.autoStartReady()).toString());
+                org.json.JSONObject st = store.stateJson(host.controlUrl(), host.autoStartReady());
+                try {
+                    st.put("display", host.displayInfo());
+                    org.json.JSONArray items = st.getJSONArray("items");
+                    for (int i = 0; i < items.length(); i++) {
+                        org.json.JSONObject it = items.getJSONObject(i);
+                        String d = host.mediaDims(new File(store.mediaDir(), it.getString("name")));
+                        if (d != null) it.put("dims", d);
+                    }
+                } catch (org.json.JSONException ignored) { }
+                json(out, st.toString());
                 return;
             }
             if (path.startsWith("/media/")) { media(out, path.substring(7), headers.get("range"), head); return; }

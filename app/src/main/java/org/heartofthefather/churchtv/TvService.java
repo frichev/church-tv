@@ -134,6 +134,63 @@ public class TvService extends Service implements WebServer.Host, Store.Listener
         return Build.VERSION.SDK_INT < 29 || Settings.canDrawOverlays(this);
     }
 
+    private final java.util.concurrent.ConcurrentHashMap<String, String> dimsCache = new java.util.concurrent.ConcurrentHashMap<>();
+
+    @Override public String mediaDims(java.io.File f) {
+        String key = f.getAbsolutePath() + "@" + f.lastModified();
+        String cached = dimsCache.get(key);
+        if (cached != null) return cached.isEmpty() ? null : cached;
+        String d = null;
+        try {
+            if ("video".equals(Store.typeOf(f.getName()))) {
+                android.media.MediaMetadataRetriever r = new android.media.MediaMetadataRetriever();
+                try {
+                    r.setDataSource(f.getAbsolutePath());
+                    int w = Integer.parseInt(r.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH));
+                    int hh = Integer.parseInt(r.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT));
+                    String rot = r.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION);
+                    if ("90".equals(rot) || "270".equals(rot)) { int t = w; w = hh; hh = t; }
+                    d = w + "x" + hh;
+                } finally { r.release(); }
+            } else {
+                android.graphics.BitmapFactory.Options o = new android.graphics.BitmapFactory.Options();
+                o.inJustDecodeBounds = true;
+                android.graphics.BitmapFactory.decodeFile(f.getAbsolutePath(), o);
+                if (o.outWidth > 0) {
+                    int rot = AnnouncementView.exifRotation(f);
+                    d = rot % 180 == 0 ? o.outWidth + "x" + o.outHeight : o.outHeight + "x" + o.outWidth;
+                }
+            }
+        } catch (Throwable ignored) { }
+        dimsCache.put(key, d == null ? "" : d);
+        return d;
+    }
+
+    @Override public String displayInfo() {
+        StringBuilder sb = new StringBuilder();
+        try {
+            android.view.WindowManager wm = (android.view.WindowManager) getSystemService(WINDOW_SERVICE);
+            android.view.Display d = wm.getDefaultDisplay();
+            android.util.DisplayMetrics dm = new android.util.DisplayMetrics();
+            d.getRealMetrics(dm);
+            int[] panel = AnnouncementView.panelSize(this);
+            sb.append("TV panel ").append(panel[0]).append("x").append(panel[1]);
+            sb.append(" · app screen ").append(dm.widthPixels).append("x").append(dm.heightPixels);
+            sb.append(" · photos and videos shown at ").append(panel[0]).append("x").append(panel[1]);
+            if (Build.VERSION.SDK_INT >= 24 && d.getHdrCapabilities() != null) {
+                StringBuilder hdr = new StringBuilder();
+                for (int t : d.getHdrCapabilities().getSupportedHdrTypes()) {
+                    String n = t == 1 ? "Dolby Vision" : t == 2 ? "HDR10" : t == 3 ? "HLG" : t == 4 ? "HDR10+" : null;
+                    if (n != null) hdr.append(hdr.length() > 0 ? ", " : "").append(n);
+                }
+                if (hdr.length() > 0) sb.append(" · HDR: ").append(hdr);
+            }
+        } catch (Throwable t) {
+            sb.append("unknown");
+        }
+        return sb.toString();
+    }
+
     // ---------- notification (required for an always-on service) ----------
 
     private Notification buildNotification() {
