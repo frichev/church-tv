@@ -1,0 +1,256 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Church TV Player</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; cursor: none;
+    font-family: "Helvetica Neue", Roboto, Arial, sans-serif; color: #fff; }
+  .layer { position: absolute; inset: 0; width: 100%; height: 100%; }
+  #img, #vid { object-fit: contain; background: #000; opacity: 0; transition: opacity .6s ease; }
+  #img.on, #vid.on { opacity: 1; }
+  #live { display: none; background: #000; }
+  #live iframe, #ytp { width: 100%; height: 100%; border: 0; }
+  .screen { display: none; flex-direction: column; align-items: center; justify-content: center;
+    text-align: center; background: radial-gradient(circle at 50% 40%, #23304a 0%, #0b0f18 70%); }
+  .screen h1 { font-size: 5.2vw; font-weight: 600; margin: 0 0 1.5vw; letter-spacing: .02em; }
+  .screen p { font-size: 2.2vw; margin: .4vw 0; color: #c9d3e6; }
+  .screen .url { margin-top: 2.5vw; font-size: 1.7vw; color: #8fa3c7; }
+  #banner { position: absolute; left: 0; right: 0; bottom: 0; padding: 1.2vw 2vw; font-size: 2vw;
+    background: linear-gradient(transparent, rgba(0,0,0,.85)); display: none; }
+  #info { position: absolute; right: 1.5vw; bottom: 1.5vw; padding: .9vw 1.3vw; border-radius: .8vw;
+    background: rgba(0,0,0,.72); font-size: 1.4vw; line-height: 1.5; display: none; max-width: 50vw; }
+  #info b { color: #ffd479; }
+  #info .warn { color: #ff9b8a; }
+  .dot { display: inline-block; width: 1.4vw; height: 1.4vw; border-radius: 50%; background: #e33;
+    margin-right: .8vw; vertical-align: middle; animation: pulse 1.6s infinite; }
+  @keyframes pulse { 50% { opacity: .35; } }
+</style>
+</head>
+<body>
+  <img id="img" class="layer" alt="">
+  <video id="vid" class="layer" playsinline preload="auto"></video>
+
+  <div id="welcome" class="layer screen">
+    <h1>Welcome</h1>
+    <p>Heart of the Father Ministry</p>
+    <p class="url" id="welcomeUrl"></p>
+  </div>
+
+  <div id="handoff" class="layer screen">
+    <h1><span class="dot"></span>We're live</h1>
+    <p>Opening the livestream…</p>
+  </div>
+
+  <div id="live" class="layer"><div id="ytp"></div></div>
+
+  <div id="banner"><span class="dot"></span>The livestream will begin shortly</div>
+  <div id="info"></div>
+
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var img = $('img'), vid = $('vid');
+  var state = null, paused = false;
+
+  // ---------------- announcements loop ----------------
+  var items = [], playlistKey = '', idx = -1, timer = null, loopRunning = false;
+
+  function clearTimer() { if (timer) { clearTimeout(timer); timer = null; } }
+
+  function stopLoop() {
+    loopRunning = false;
+    clearTimer();
+    img.classList.remove('on');
+    vid.classList.remove('on');
+    vid.onended = vid.onerror = null;
+    try { vid.pause(); } catch (e) {}
+    vid.removeAttribute('src'); vid.load();
+    $('welcome').style.display = 'none';
+  }
+
+  function mediaUrl(it) { return '/media/' + encodeURIComponent(it.name) + '?v=' + it.v; }
+
+  function startLoop(fromStart) {
+    if (!loopRunning || fromStart) { if (fromStart) idx = -1; }
+    loopRunning = true;
+    if (!items.length) {
+      clearTimer();
+      img.classList.remove('on'); vid.classList.remove('on');
+      try { vid.pause(); } catch (e) {}
+      $('welcome').style.display = 'flex';
+      return;
+    }
+    $('welcome').style.display = 'none';
+    next();
+  }
+
+  function next() {
+    clearTimer();
+    if (!loopRunning || paused || !items.length) return;
+    idx = (idx + 1) % items.length;
+    var it = items[idx];
+    if (it.type === 'image') showImage(it); else showVideo(it);
+  }
+
+  function showImage(it) {
+    vid.classList.remove('on');
+    vid.onended = vid.onerror = null;
+    try { vid.pause(); } catch (e) {}
+    var pre = new Image();
+    pre.onload = function () {
+      if (!loopRunning) return;
+      img.classList.remove('on');
+      setTimeout(function () {
+        img.src = pre.src; img.classList.add('on');
+        vid.removeAttribute('src'); vid.load();
+      }, img.classList.contains('on') ? 300 : 0);
+      timer = setTimeout(next, (state ? state.imageSeconds : 10) * 1000);
+    };
+    pre.onerror = function () { timer = setTimeout(next, 1000); };
+    pre.src = mediaUrl(it);
+  }
+
+  function showVideo(it) {
+    vid.onended = function () {
+      if (items.length === 1) { vid.currentTime = 0; vid.play(); } else next();
+    };
+    vid.onerror = function () { timer = setTimeout(next, 1000); };
+    vid.src = mediaUrl(it);
+    vid.muted = false;
+    var p = vid.play();
+    if (p && p.catch) p.catch(function () { vid.muted = true; vid.play().catch(function () {}); });
+    vid.onplaying = function () { vid.classList.add('on'); img.classList.remove('on'); vid.onplaying = null; };
+  }
+
+  // ---------------- live stream ----------------
+  var yt = null, ytId = null, ytApiLoading = false, ytWatch = null, embedFailed = {};
+
+  function loadYtApi(cb) {
+    if (window.YT && window.YT.Player) return cb();
+    window.onYouTubeIframeAPIReady = cb;
+    if (ytApiLoading) return;
+    ytApiLoading = true;
+    var s = document.createElement('script');
+    s.src = 'https://www.youtube.com/iframe_api';
+    s.onerror = function () { ytApiLoading = false; };
+    document.head.appendChild(s);
+  }
+
+  function stopLive() {
+    $('live').style.display = 'none';
+    $('handoff').style.display = 'none';
+    if (ytWatch) { clearInterval(ytWatch); ytWatch = null; }
+    if (yt) { try { yt.destroy(); } catch (e) {} yt = null; }
+    ytId = null;
+    if (!$('ytp')) { var d = document.createElement('div'); d.id = 'ytp'; $('live').appendChild(d); }
+  }
+
+  function handOff(id) {
+    stopLive();
+    $('handoff').style.display = 'flex';
+    if (!paused && window.ChurchTV) window.ChurchTV.openYouTube(id);
+  }
+
+  function playLive(id) {
+    if (state.playback === 'youtubeapp' || embedFailed[id]) return handOff(id);
+    $('handoff').style.display = 'none';
+    $('live').style.display = 'block';
+    if (yt && ytId === id) return;
+    stopLive();
+    $('live').style.display = 'block';
+    ytId = id;
+    var started = Date.now();
+    loadYtApi(function () {
+      if (ytId !== id) return;
+      yt = new YT.Player('ytp', {
+        videoId: id,
+        playerVars: { autoplay: 1, controls: 0, rel: 0, playsinline: 1, modestbranding: 1,
+                      iv_load_policy: 3, disablekb: 1, fs: 0, origin: location.origin },
+        events: {
+          onReady: function (e) { try { e.target.unMute(); e.target.setVolume(100); e.target.playVideo(); } catch (x) {} },
+          onError: function (e) { console.log('YT error ' + e.data); embedFailed[id] = true; apply(); },
+          onStateChange: function (e) { if (e.data === 0) post('/api/check'); }
+        }
+      });
+    });
+    // Safety net: if the embedded player hasn't started after a while, use the YouTube app instead.
+    ytWatch = setInterval(function () {
+      if (paused || ytId !== id) return;
+      var st = -1; try { st = yt && yt.getPlayerState ? yt.getPlayerState() : -1; } catch (x) {}
+      if (st === 1) { started = Date.now(); return; }
+      if (st !== 3 && yt && yt.playVideo) { try { yt.playVideo(); } catch (x) {} }
+      if (Date.now() - started > 45000) { embedFailed[id] = true; apply(); }
+    }, 5000);
+  }
+
+  // ---------------- state handling ----------------
+  function apply() {
+    if (!state) return;
+    var key = JSON.stringify(state.items.map(function (i) { return i.name + i.v; })) + '|' + state.imageSeconds;
+    var changed = key !== playlistKey;
+    items = state.items; playlistKey = key;
+    $('welcomeUrl').textContent = 'Add announcements at ' + state.controlUrl;
+
+    var liveWithVideo = state.mode === 'live' && state.videoId;
+    $('banner').style.display = (state.mode === 'live' && !state.videoId) ? 'block' : 'none';
+
+    if (liveWithVideo) {
+      if (loopRunning) stopLoop();
+      playLive(state.videoId);
+    } else {
+      if (ytId || $('handoff').style.display === 'flex') stopLive();
+      if (paused) return;
+      if (!loopRunning || changed) startLoop(changed);
+    }
+  }
+
+  function poll() {
+    var x = new XMLHttpRequest();
+    x.open('GET', '/api/state', true);
+    x.timeout = 5000;
+    x.onload = function () {
+      try { state = JSON.parse(x.responseText); apply(); } catch (e) {}
+    };
+    x.send();
+  }
+
+  function post(url) { var x = new XMLHttpRequest(); x.open('POST', url, true); x.send(); }
+
+  // ---------------- info overlay ----------------
+  var infoTimer = null;
+  window.showInfo = function () {
+    if (!state) return;
+    var h = 'Control page: <b>' + state.controlUrl + '</b><br>' +
+      (state.live ? 'Livestream: LIVE now' : 'Livestream: not live') +
+      (state.override ? ' · Manual: ' + state.override : ' · Automatic');
+    if (!state.autoStartReady) h += '<br><span class="warn">Auto-start permission not granted yet — run the setup script.</span>';
+    $('info').innerHTML = h;
+    $('info').style.display = 'block';
+    clearTimeout(infoTimer);
+    infoTimer = setTimeout(function () { $('info').style.display = 'none'; }, 20000);
+  };
+
+  window.onAppPaused = function () {
+    paused = true;
+    clearTimer();
+    try { vid.pause(); } catch (e) {}
+    try { if (yt && yt.pauseVideo) yt.pauseVideo(); } catch (e) {}
+  };
+  window.onAppResumed = function () {
+    var was = paused;
+    paused = false;
+    if (!was) return;
+    try { if (yt && yt.playVideo) yt.playVideo(); } catch (e) {}
+    if (state && !(state.mode === 'live' && state.videoId)) startLoop(false);
+    poll();
+  };
+
+  poll();
+  setInterval(poll, 3000);
+  setTimeout(function () { window.showInfo(); }, 1500);
+})();
+</script>
+</body>
+</html>

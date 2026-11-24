@@ -1,0 +1,39 @@
+plugins { id 'com.android.application' }
+
+android {
+    namespace 'org.heartofthefather.churchtv'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'org.heartofthefather.churchtv'
+        minSdk 22          // Fire OS 5 and newer
+        targetSdk 30       // Fire OS 8 is based on Android 11 (API 30)
+        versionCode 1
+        versionName '1.0'
+    }
+
+    signingConfigs {
+        release {
+            // Keep this keystore: every future update must be signed with it,
+            // or the TV will refuse to install the update over the old version.
+            storeFile file('../keystore/churchtv.jks')
+            storePassword 'churchtv'
+            keyAlias 'churchtv'
+            keyPassword 'churchtv'
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.release
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    lint { abortOnError false; checkReleaseBuilds false }
+}

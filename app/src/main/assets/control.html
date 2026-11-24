@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Church TV Control</title>
+<style>
+  :root { --bg:#f4f5f8; --card:#fff; --text:#1b1f27; --muted:#667085; --line:#e3e6ec;
+          --accent:#2f5bd3; --accent-text:#fff; --live:#d92d20; --ok:#12805c; --warn:#b54708; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#0f1218; --card:#181c24; --text:#e8ebf1; --muted:#98a2b3; --line:#2a303b;
+            --accent:#5b84f0; --accent-text:#fff; --live:#f97066; --ok:#47cd89; --warn:#fdb022; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:16px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 820px; margin: 0 auto; padding: 20px 16px 60px; }
+  h1 { font-size: 22px; margin: 4px 0 18px; }
+  h2 { font-size: 16px; margin: 0 0 12px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; margin-bottom:16px; }
+  .status { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+  .pill { display:inline-flex; align-items:center; gap:8px; padding:6px 12px; border-radius:999px; font-weight:600; border:1px solid var(--line); }
+  .pill.live { color:var(--live); border-color:var(--live); }
+  .pill.ann { color:var(--accent); border-color:var(--accent); }
+  .dot { width:10px; height:10px; border-radius:50%; background:currentColor; }
+  .muted { color:var(--muted); font-size:14px; }
+  .warn { color:var(--warn); font-size:14px; margin-top:10px; }
+  .buttons { display:grid; grid-template-columns: repeat(3, 1fr); gap:8px; margin-top:14px; }
+  @media (max-width: 560px) { .buttons { grid-template-columns: 1fr; } }
+  button { font:inherit; padding:10px 14px; border-radius:8px; border:1px solid var(--line); background:var(--card); color:var(--text); cursor:pointer; }
+  button:hover { border-color: var(--accent); }
+  button.primary, button.sel { background:var(--accent); color:var(--accent-text); border-color:var(--accent); }
+  button.small { padding:6px 10px; font-size:14px; }
+  button.danger:hover { border-color:var(--live); color:var(--live); }
+  .row-actions { display:flex; gap:8px; flex-wrap:wrap; margin-top:10px; }
+  #drop { border:2px dashed var(--line); border-radius:10px; padding:22px; text-align:center; cursor:pointer; }
+  #drop.over { border-color:var(--accent); }
+  progress { width:100%; height:10px; margin-top:10px; }
+  ul { list-style:none; margin:0; padding:0; }
+  li.item { display:flex; align-items:center; gap:12px; padding:10px 0; border-top:1px solid var(--line); }
+  li.item:first-child { border-top:0; }
+  .thumb { width:112px; aspect-ratio:16/9; flex:none; border-radius:6px; background:#000; object-fit:cover; }
+  .meta { flex:1; min-width:0; }
+  .name { font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .ctrls { display:flex; gap:6px; flex:none; }
+  label { display:block; font-size:14px; color:var(--muted); margin:10px 0 4px; }
+  input[type=text], input[type=number], select { font:inherit; width:100%; padding:9px 10px; border-radius:8px; border:1px solid var(--line); background:var(--bg); color:var(--text); }
+  .grid2 { display:grid; grid-template-columns: 1fr 1fr; gap:12px; }
+  @media (max-width: 560px) { .grid2 { grid-template-columns: 1fr; } .thumb { width:84px; }
+    li.item { flex-wrap: wrap; } .meta { flex: 1 1 calc(100% - 100px); } .ctrls { width: 100%; justify-content: flex-end; } }
+  #toast { position:fixed; left:50%; bottom:20px; transform:translateX(-50%); background:#1b1f27; color:#fff; padding:10px 16px; border-radius:8px; display:none; max-width:90vw; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Church TV</h1>
+
+  <section class="card">
+    <div class="status">
+      <span id="modePill" class="pill"><span class="dot"></span><span id="modeText">…</span></span>
+      <span id="modeHow" class="muted"></span>
+    </div>
+    <div class="muted" id="checkText" style="margin-top:8px"></div>
+    <div class="buttons">
+      <button id="bAuto" data-mode="auto">Automatic</button>
+      <button id="bLive" data-mode="live">Show livestream</button>
+      <button id="bAnn" data-mode="announcements">Show announcements</button>
+    </div>
+    <div class="muted" style="margin-top:8px">Automatic switches to the livestream when the channel goes live and back to announcements when it ends. A manual choice lasts until the stream starts or stops.</div>
+    <div class="row-actions">
+      <button class="small" id="bCheck">Check for livestream now</button>
+      <button class="small" id="bReload">Restart TV screen</button>
+    </div>
+    <div class="warn" id="permWarn" style="display:none">The TV hasn't been given permission to bring Church TV back on screen by itself. Run the setup script once from a computer (see the setup guide).</div>
+  </section>
+
+  <section class="card">
+    <h2>Announcements</h2>
+    <div id="drop">Drop videos or images here, or <u>click to choose files</u><br>
+      <span class="muted">MP4 video works best · JPG / PNG images</span></div>
+    <input id="file" type="file" multiple accept="video/*,image/*" style="display:none">
+    <div id="upWrap" style="display:none"><div class="muted" id="upText"></div><progress id="upBar" max="100" value="0"></progress></div>
+    <ul id="list" style="margin-top:12px"></ul>
+    <div class="muted" id="space" style="margin-top:8px"></div>
+  </section>
+
+  <section class="card">
+    <h2>Settings</h2>
+    <div class="grid2">
+      <div>
+        <label for="secs">Show each image for (seconds)</label>
+        <input id="secs" type="number" min="2" max="600">
+      </div>
+      <div>
+        <label for="pb">Play the livestream</label>
+        <select id="pb">
+          <option value="inapp">Inside Church TV (recommended)</option>
+          <option value="youtubeapp">In the YouTube app</option>
+        </select>
+      </div>
+    </div>
+    <label for="chan">YouTube channel</label>
+    <input id="chan" type="text" placeholder="@yourchannel">
+    <div class="row-actions"><button class="primary" id="bSave">Save settings</button></div>
+  </section>
+</main>
+<div id="toast"></div>
+
+<script>
+var $ = function (id) { return document.getElementById(id); };
+var state = null, lastListKey = '', settingsLoaded = false;
+
+function toast(msg) { var t = $('toast'); t.textContent = msg; t.style.display = 'block'; clearTimeout(t._h); t._h = setTimeout(function(){ t.style.display='none'; }, 3500); }
+function post(url) { return fetch(url, { method: 'POST' }).then(function (r) { if (!r.ok) return r.text().then(function (t) { throw new Error(t); }); return r; }); }
+function fmtSize(b) { return b > 1e9 ? (b/1e9).toFixed(1)+' GB' : b > 1e6 ? (b/1e6).toFixed(1)+' MB' : Math.round(b/1e3)+' KB'; }
+function ago(ms) { if (!ms) return 'never'; var s = Math.round((Date.now() - ms) / 1000); return s < 60 ? s + 's ago' : Math.round(s/60) + ' min ago'; }
+
+function render() {
+  var s = state;
+  var live = s.mode === 'live';
+  $('modePill').className = 'pill ' + (live ? 'live' : 'ann');
+  $('modeText').textContent = live ? (s.videoId ? 'Showing livestream' : 'Waiting for livestream') : 'Showing announcements';
+  $('modeHow').textContent = s.override ? 'Manual' : 'Automatic';
+  $('checkText').textContent = 'YouTube @' + s.channel + ': ' + s.lastCheckResult + ' · checked ' + ago(s.lastCheck);
+  ['bAuto','bLive','bAnn'].forEach(function (id) {
+    var m = $(id).dataset.mode;
+    $(id).classList.toggle('sel', (s.override || 'auto') === m);
+  });
+  $('permWarn').style.display = s.autoStartReady ? 'none' : 'block';
+  $('space').textContent = 'Free space on TV: ' + fmtSize(s.freeBytes);
+
+  if (!settingsLoaded) {
+    $('secs').value = s.imageSeconds; $('pb').value = s.playback; $('chan').value = '@' + s.channel;
+    settingsLoaded = true;
+  }
+
+  var key = JSON.stringify(s.items);
+  if (key === lastListKey) return;
+  lastListKey = key;
+  var ul = $('list'); ul.innerHTML = '';
+  if (!s.items.length) { ul.innerHTML = '<li class="muted">No announcements yet. The TV shows a welcome screen until you add some.</li>'; return; }
+  s.items.forEach(function (it, i) {
+    var li = document.createElement('li'); li.className = 'item';
+    var src = '/media/' + encodeURIComponent(it.name) + '?v=' + it.v;
+    var th;
+    if (it.type === 'image') { th = document.createElement('img'); th.src = src; th.loading = 'lazy'; }
+    else { th = document.createElement('video'); th.src = src + '#t=1'; th.preload = 'metadata'; th.muted = true; }
+    th.className = 'thumb';
+    var meta = document.createElement('div'); meta.className = 'meta';
+    meta.innerHTML = '<div class="name"></div><div class="muted"></div>';
+    meta.firstChild.textContent = (i + 1) + '. ' + it.name;
+    meta.lastChild.textContent = (it.type === 'image' ? 'Image · ' + s.imageSeconds + 's' : 'Video') + ' · ' + fmtSize(it.size);
+    var c = document.createElement('div'); c.className = 'ctrls';
+    c.innerHTML = '<button class="small" title="Move up">↑</button><button class="small" title="Move down">↓</button><button class="small danger" title="Delete">Delete</button>';
+    var q = '?name=' + encodeURIComponent(it.name);
+    c.children[0].onclick = function () { post('/api/move' + q + '&dir=up').then(refresh); };
+    c.children[1].onclick = function () { post('/api/move' + q + '&dir=down').then(refresh); };
+    c.children[2].onclick = function () { if (confirm('Delete "' + it.name + '"?')) post('/api/delete' + q).then(refresh); };
+    li.appendChild(th); li.appendChild(meta); li.appendChild(c); ul.appendChild(li);
+  });
+}
+
+function refresh() {
+  return fetch('/api/state', { cache: 'no-store' }).then(function (r) { return r.json(); })
+    .then(function (s) { state = s; render(); }).catch(function () { $('checkText').textContent = 'Can’t reach the TV. Is it on and connected?'; });
+}
+
+['bAuto','bLive','bAnn'].forEach(function (id) {
+  $(id).onclick = function () { post('/api/mode?m=' + $(id).dataset.mode).then(refresh).then(function(){ toast('Sent to TV'); }); };
+});
+$('bCheck').onclick = function () { post('/api/check').then(function () { toast('Checking YouTube…'); setTimeout(refresh, 4000); }); };
+$('bReload').onclick = function () { post('/api/reload').then(function () { toast('TV screen restarted'); }); };
+$('bSave').onclick = function () {
+  var q = '?imageSeconds=' + encodeURIComponent($('secs').value) + '&playback=' + encodeURIComponent($('pb').value) +
+          '&channel=' + encodeURIComponent($('chan').value);
+  post('/api/settings' + q).then(function () { settingsLoaded = false; lastListKey = ''; return refresh(); }).then(function(){ toast('Settings saved'); })
+    .catch(function (e) { toast(e.message); });
+};
+
+// ---- uploads ----
+var drop = $('drop'), fileInput = $('file'), queue = [], uploading = false;
+drop.onclick = function () { fileInput.click(); };
+fileInput.onchange = function () { addFiles(fileInput.files); fileInput.value = ''; };
+drop.ondragover = function (e) { e.preventDefault(); drop.classList.add('over'); };
+drop.ondragleave = function () { drop.classList.remove('over'); };
+drop.ondrop = function (e) { e.preventDefault(); drop.classList.remove('over'); addFiles(e.dataTransfer.files); };
+
+function addFiles(files) { for (var i = 0; i < files.length; i++) queue.push(files[i]); if (!uploading) nextUpload(); }
+
+function nextUpload() {
+  var f = queue.shift();
+  if (!f) { uploading = false; $('upWrap').style.display = 'none'; refresh(); return; }
+  uploading = true;
+  $('upWrap').style.display = 'block';
+  $('upText').textContent = 'Uploading ' + f.name + ' (' + fmtSize(f.size) + ')' + (queue.length ? ' · ' + queue.length + ' more waiting' : '');
+  $('upBar').value = 0;
+  var x = new XMLHttpRequest();
+  x.open('POST', '/api/upload?name=' + encodeURIComponent(f.name));
+  x.upload.onprogress = function (e) { if (e.lengthComputable) $('upBar').value = 100 * e.loaded / e.total; };
+  x.onload = function () { if (x.status !== 200) toast(f.name + ': ' + x.responseText); else toast('Added ' + f.name); refresh(); nextUpload(); };
+  x.onerror = function () { toast('Upload of ' + f.name + ' failed'); nextUpload(); };
+  x.send(f);
+}
+
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>
