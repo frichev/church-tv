@@ -35,7 +35,6 @@
   <div id="welcome" class="layer screen">
     <h1>Welcome</h1>
     <p>Heart of the Father Ministry</p>
-    <p class="url" id="welcomeUrl"></p>
   </div>
 
   <div id="handoff" class="layer screen">
@@ -199,7 +198,6 @@
     var key = JSON.stringify(state.items.map(function (i) { return i.name + i.v; })) + '|' + state.imageSeconds;
     var changed = key !== playlistKey;
     items = state.items; playlistKey = key;
-    $('welcomeUrl').textContent = 'Add announcements at ' + state.controlUrl;
 
     var liveWithVideo = state.mode === 'live' && state.videoId;
     $('banner').style.display = (state.mode === 'live' && !state.videoId) ? 'block' : 'none';
@@ -236,8 +234,8 @@
   var infoTimer = null;
   window.showInfo = function () {
     if (!state) return;
-    var h = 'Control page: <b>' + state.controlUrl + '</b><br>' +
-      (state.live ? 'Livestream: LIVE now' : 'Livestream: not live') +
+    // Deliberately no control-page address here: it isn't shown on the TV.
+    var h = (state.live ? 'Livestream: LIVE now' : 'Livestream: not live') +
       (state.override ? ' · Manual: ' + state.override : ' · Automatic');
     if (!state.autoStartReady) h += '<br><span class="warn">Auto-start permission not granted yet — run the setup script.</span>';
     $('info').innerHTML = h;
@@ -263,7 +261,6 @@
 
   poll();
   setInterval(poll, 3000);
-  setTimeout(function () { window.showInfo(); }, 1500);
 })();
 </script>
 </body>

@@ -222,6 +222,83 @@ public final class Store {
         savePlaylist(list);
     }
 
+    // ---------- control-page PIN ----------
+
+    public static boolean validPinFormat(String pin) {
+        return pin != null && pin.matches("[0-9]{4,8}");
+    }
+
+    public synchronized boolean hasPin() { return prefs.getString("pinHash", null) != null; }
+
+    private static String sha256Hex(String s) {
+        try {
+            byte[] d = java.security.MessageDigest.getInstance("SHA-256").digest(s.getBytes("UTF-8"));
+            StringBuilder sb = new StringBuilder();
+            for (byte x : d) sb.append(String.format(Locale.US, "%02x", x));
+            return sb.toString();
+        } catch (Exception e) { throw new RuntimeException(e); }
+    }
+
+    private static String randomHex(int bytes) {
+        byte[] b = new byte[bytes];
+        new java.security.SecureRandom().nextBytes(b);
+        StringBuilder sb = new StringBuilder();
+        for (byte x : b) sb.append(String.format(Locale.US, "%02x", x));
+        return sb.toString();
+    }
+
+    public synchronized boolean checkPin(String pin) {
+        String hash = prefs.getString("pinHash", null), salt = prefs.getString("pinSalt", "");
+        if (hash == null || pin == null) return false;
+        return java.security.MessageDigest.isEqual(hash.getBytes(), sha256Hex(salt + pin).getBytes());
+    }
+
+    /** Sets a new PIN and signs out every device. */
+    public synchronized void setPin(String pin) {
+        String salt = randomHex(16);
+        prefs.edit().putString("pinSalt", salt).putString("pinHash", sha256Hex(salt + pin))
+                .putString("tokens", "[]").apply();
+    }
+
+    public synchronized void resetPin() {
+        prefs.edit().remove("pinHash").remove("pinSalt").putString("tokens", "[]").apply();
+    }
+
+    /** A sign-in token for one browser; only its hash is stored. */
+    public synchronized String newToken() {
+        String t = randomHex(24);
+        List<String> list = tokenHashes();
+        list.add(sha256Hex(t));
+        while (list.size() > 30) list.remove(0);
+        saveTokenHashes(list);
+        return t;
+    }
+
+    public synchronized boolean validToken(String t) {
+        return t != null && t.length() == 48 && hasPin() && tokenHashes().contains(sha256Hex(t));
+    }
+
+    public synchronized void revokeToken(String t) {
+        if (t == null) return;
+        List<String> list = tokenHashes();
+        if (list.remove(sha256Hex(t))) saveTokenHashes(list);
+    }
+
+    private List<String> tokenHashes() {
+        List<String> out = new ArrayList<>();
+        try {
+            JSONArray a = new JSONArray(prefs.getString("tokens", "[]"));
+            for (int i = 0; i < a.length(); i++) out.add(a.getString(i));
+        } catch (JSONException ignored) { }
+        return out;
+    }
+
+    private void saveTokenHashes(List<String> list) {
+        JSONArray a = new JSONArray();
+        for (String s : list) a.put(s);
+        prefs.edit().putString("tokens", a.toString()).apply();
+    }
+
     // ---------- JSON for the web pages ----------
 
     public synchronized JSONObject stateJson(String controlUrl, boolean autoStartReady) {

@@ -134,8 +134,107 @@ public final class WebServer {
         }
     }
 
+    // ---------- PIN / sign-in ----------
+
+    private static final String COOKIE = "churchtv_auth";
+    private static final int MAX_FAILS = 5;
+    private static final long LOCK_MS = 5 * 60 * 1000;
+    private int fails = 0;
+    private long lockedUntil = 0;
+
+    private synchronized long lockSecondsLeft() {
+        long left = lockedUntil - System.currentTimeMillis();
+        return left > 0 ? (left + 999) / 1000 : 0;
+    }
+
+    private synchronized boolean registerFailure() {
+        if (++fails >= MAX_FAILS) { fails = 0; lockedUntil = System.currentTimeMillis() + LOCK_MS; return true; }
+        return false;
+    }
+
+    private synchronized void registerSuccess() { fails = 0; }
+
+    private static String cookie(Map<String, String> headers, String name) {
+        String c = headers.get("cookie");
+        if (c == null) return null;
+        for (String part : c.split(";")) {
+            int eq = part.indexOf('=');
+            if (eq > 0 && part.substring(0, eq).trim().equals(name)) return part.substring(eq + 1).trim();
+        }
+        return null;
+    }
+
+    private static String setCookie(String token) {
+        return "Set-Cookie: " + COOKIE + "=" + token + "; Path=/; Max-Age=31536000; HttpOnly; SameSite=Strict\r\n";
+    }
+
+    /** Returns true if the request was a sign-in endpoint and has been answered. */
+    private boolean authRoutes(String method, String path, Map<String, String> q, Map<String, String> headers,
+                               InputStream in, OutputStream out, boolean authed) throws IOException {
+        if (path.equals("/api/auth")) {
+            drain(headers, in);
+            json(out, "{\"pinSet\":" + store.hasPin() + ",\"authed\":" + authed
+                    + ",\"lockedSeconds\":" + lockSecondsLeft() + "}");
+            return true;
+        }
+        if (!"POST".equals(method)) return false;
+        switch (path) {
+            case "/api/create-pin": {
+                drain(headers, in);
+                String pin = q.get("pin");
+                if (store.hasPin()) { text(out, 409, "A PIN has already been set."); return true; }
+                if (!Store.validPinFormat(pin)) { text(out, 400, "The PIN must be 4 to 8 digits."); return true; }
+                store.setPin(pin);
+                send(out, 200, "application/json", "{\"ok\":true}".getBytes(StandardCharsets.UTF_8), -1, setCookie(store.newToken()));
+                return true;
+            }
+            case "/api/login": {
+                drain(headers, in);
+                long locked = lockSecondsLeft();
+                if (locked > 0) { text(out, 429, "Too many wrong PINs. Try again in " + ((locked + 59) / 60) + " minute(s)."); return true; }
+                if (store.checkPin(q.get("pin"))) {
+                    registerSuccess();
+                    send(out, 200, "application/json", "{\"ok\":true}".getBytes(StandardCharsets.UTF_8), -1, setCookie(store.newToken()));
+                } else {
+                    boolean nowLocked = registerFailure();
+                    text(out, 403, nowLocked ? "Too many wrong PINs. Locked for 5 minutes." : "Wrong PIN.");
+                }
+                return true;
+            }
+            case "/api/logout": {
+                drain(headers, in);
+                store.revokeToken(cookie(headers, COOKIE));
+                send(out, 200, "application/json", "{\"ok\":true}".getBytes(StandardCharsets.UTF_8), -1,
+                        "Set-Cookie: " + COOKIE + "=; Path=/; Max-Age=0\r\n");
+                return true;
+            }
+            case "/api/change-pin": {
+                drain(headers, in);
+                if (!authed) { text(out, 401, "Please sign in."); return true; }
+                if (lockSecondsLeft() > 0) { text(out, 429, "Too many wrong PINs. Try again later."); return true; }
+                if (!store.checkPin(q.get("current"))) { registerFailure(); text(out, 403, "The current PIN is wrong."); return true; }
+                if (!Store.validPinFormat(q.get("pin"))) { text(out, 400, "The new PIN must be 4 to 8 digits."); return true; }
+                registerSuccess();
+                store.setPin(q.get("pin"));   // signs out every other device
+                send(out, 200, "application/json", "{\"ok\":true}".getBytes(StandardCharsets.UTF_8), -1, setCookie(store.newToken()));
+                return true;
+            }
+        }
+        return false;
+    }
+
     private void route(String method, String path, Map<String, String> q, Map<String, String> headers,
                        InputStream in, OutputStream out, Socket sock) throws IOException {
+        // The TV itself (its own player page) never needs the PIN; everyone else does.
+        boolean local = sock.getInetAddress() != null && sock.getInetAddress().isLoopbackAddress();
+        boolean authed = local || store.validToken(cookie(headers, COOKIE));
+        boolean publicPage = ("GET".equals(method) || "HEAD".equals(method)) && (path.equals("/") || path.equals("/index.html"));
+        if (authRoutes(method, path, q, headers, in, out, authed)) return;
+        if (!authed && !publicPage) {
+            drain(headers, in);
+            send(out, 401, "application/json", "{\"auth\":\"required\"}".getBytes(StandardCharsets.UTF_8), -1, "");
+            return;
+        }
         if ("GET".equals(method) || "HEAD".equals(method)) {
             boolean head = "HEAD".equals(method);
             if (path.equals("/") || path.equals("/index.html")) { asset(out, "control.html", head); return; }
@@ -320,12 +419,21 @@ public final class WebServer {
     }
 
     private static void send(OutputStream out, int code, String type, byte[] body, long lengthOverride) throws IOException {
+        send(out, code, type, body, lengthOverride, "");
+    }
+
+    private static void send(OutputStream out, int code, String type, byte[] body, long lengthOverride,
+                             String extraHeaders) throws IOException {
         String status;
         switch (code) {
             case 200: status = "OK"; break;
             case 400: status = "Bad Request"; break;
             case 404: status = "Not Found"; break;
+            case 401: status = "Unauthorized"; break;
+            case 403: status = "Forbidden"; break;
             case 405: status = "Method Not Allowed"; break;
+            case 409: status = "Conflict"; break;
+            case 429: status = "Too Many Requests"; break;
             case 411: status = "Length Required"; break;
             case 507: status = "Insufficient Storage"; break;
             default: status = "Error";
@@ -334,6 +442,7 @@ public final class WebServer {
                 + "Content-Type: " + type + "\r\n"
                 + "Content-Length: " + (lengthOverride >= 0 ? lengthOverride : body.length) + "\r\n"
                 + "Cache-Control: no-store\r\n"
+                + extraHeaders
                 + "Connection: close\r\n\r\n";
         out.write(h.getBytes(StandardCharsets.US_ASCII));
         out.write(body);

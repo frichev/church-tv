@@ -39,6 +39,11 @@
 
         <service android:name=".TvService" android:exported="false" />
 
+        <!-- Forgotten-PIN reset: only the ADB shell holds DUMP, so other apps can't call this. -->
+        <receiver android:name=".ResetPinReceiver"
+            android:exported="true"
+            android:permission="android.permission.DUMP" />
+
         <receiver android:name=".BootReceiver" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />

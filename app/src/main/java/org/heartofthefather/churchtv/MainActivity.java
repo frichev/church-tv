@@ -108,7 +108,7 @@ public class MainActivity extends Activity {
     }
 
     @Override public boolean onKeyDown(int keyCode, KeyEvent event) {
-        // Menu button (or center/OK) briefly shows the control-page address on screen.
+        // Menu button (or center/OK) briefly shows the live/automatic status (never the address).
         if (keyCode == KeyEvent.KEYCODE_MENU || keyCode == KeyEvent.KEYCODE_DPAD_CENTER
                 || keyCode == KeyEvent.KEYCODE_ENTER || keyCode == KeyEvent.KEYCODE_INFO) {
             if (web != null) web.evaluateJavascript("window.showInfo && window.showInfo()", null);

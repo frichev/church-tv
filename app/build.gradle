@@ -8,8 +8,8 @@ android {
         applicationId 'org.heartofthefather.churchtv'
         minSdk 22          // Fire OS 5 and newer
         targetSdk 30       // Fire OS 8 is based on Android 11 (API 30)
-        versionCode 3
-        versionName '1.2'
+        versionCode 4
+        versionName '1.3'
     }
 
     signingConfigs {

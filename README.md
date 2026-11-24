@@ -62,7 +62,9 @@ Press **Home**, go to **Your Apps**, highlight **Church TV**, press **Menu (☰)
 
 ## Everyday use: the control page
 
-On any computer or phone on the building network, open **`http://<TV IP>:8080`** (for example `http://192.168.1.50:8080`) and bookmark it.
+On any computer or phone on the building network, open **`http://<TV IP>:8080`** (for example `http://192.168.1.154:8080`) and bookmark it.
+
+**PIN:** the first time anyone opens the control page, it asks them to **create a PIN** (4 to 8 digits), so do this yourself straight after installing. After that, each new computer or phone has to enter the PIN once and then stays signed in. You can change the PIN, or sign a device out, under **Security** at the bottom of the page. Changing the PIN signs out every other device. After 5 wrong PINs, sign-in is locked for 5 minutes. The TV itself never needs the PIN.
 
 - **Announcements:** drag videos or images in. Use ↑ ↓ to reorder and **Delete** to remove. MP4 videos work best.
 - **Automatic** (normal setting): announcements loop until the channel goes live, then the TV switches to the stream. It switches back when the stream ends.
@@ -70,7 +72,7 @@ On any computer or phone on the building network, open **`http://<TV IP>:8080`**
 - **Check for livestream now:** the TV checks YouTube once a minute; this checks immediately.
 - **Restart TV screen:** reloads the TV display if anything looks stuck.
 
-If you forget the address, press **OK** or **Menu** on the remote while Church TV is showing. The address appears in the bottom corner.
+For privacy, the TV never shows the control page address on screen. If you forget it, find the TV's IP address under **Settings → My Fire TV → About → Network** and add `:8080` to the end.
 
 ---
 
@@ -82,6 +84,7 @@ If you forget the address, press **OK** or **Menu** on the remote while Church T
 | The stream shows an error or black screen inside Church TV | On the control page, under **Settings → Play the livestream**, choose **In the YouTube app**. |
 | The control page won't load | Check the TV is on and on the network, and that the IP hasn't changed (Settings → My Fire TV → About → Network). |
 | The TV didn't switch to the stream | Make sure the stream is **public** (not unlisted). Click **Check for livestream now**. |
+| Forgot the PIN | From the Mac, in the folder where you ran the setup script: `bash reset-pin.sh <TV IP>` (download it first with `curl -fsSL -o reset-pin.sh https://raw.githubusercontent.com/frichev/church-tv/main/tools/reset-pin.sh`). ADB Debugging must be on. Your announcements and settings are kept; the next visit asks for a new PIN. |
 | Undo the de-bloat | `bash undo-debloat.sh <TV IP>` turns everything back on. A factory reset also restores the TV. |
 
 ## Updating the app

@@ -43,7 +43,7 @@
   .name { font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .ctrls { display:flex; gap:6px; flex:none; }
   label { display:block; font-size:14px; color:var(--muted); margin:10px 0 4px; }
-  input[type=text], input[type=number], select { font:inherit; width:100%; padding:9px 10px; border-radius:8px; border:1px solid var(--line); background:var(--bg); color:var(--text); }
+  input[type=text], input[type=number], input[type=password], select { font:inherit; width:100%; padding:9px 10px; border-radius:8px; border:1px solid var(--line); background:var(--bg); color:var(--text); }
   .grid2 { display:grid; grid-template-columns: 1fr 1fr; gap:12px; }
   @media (max-width: 560px) { .grid2 { grid-template-columns: 1fr; } .thumb { width:84px; }
     li.item { flex-wrap: wrap; } .meta { flex: 1 1 calc(100% - 100px); } .ctrls { width: 100%; justify-content: flex-end; } }
@@ -53,6 +53,17 @@
 <body>
 <main>
   <h1>Church TV</h1>
+
+  <section class="card" id="gate" style="display:none; max-width:420px">
+    <h2 id="gateTitle">Enter PIN</h2>
+    <p class="muted" id="gateText" style="margin-top:0"></p>
+    <input id="pin1" type="password" inputmode="numeric" pattern="[0-9]*" autocomplete="off" maxlength="8" placeholder="PIN">
+    <input id="pin2" type="password" inputmode="numeric" pattern="[0-9]*" autocomplete="off" maxlength="8" placeholder="Type the PIN again" style="display:none; margin-top:8px">
+    <div class="row-actions"><button class="primary" id="gateBtn">Sign in</button></div>
+    <div class="warn" id="gateErr"></div>
+  </section>
+
+  <div id="app" style="display:none">
 
   <section class="card">
     <div class="status">
@@ -121,6 +132,26 @@
     <input id="chan" type="text" placeholder="@yourchannel">
     <div class="row-actions"><button class="primary" id="bSave">Save settings</button></div>
   </section>
+
+  <section class="card">
+    <h2>Security</h2>
+    <div class="grid2">
+      <div>
+        <label for="cp0">Current PIN</label>
+        <input id="cp0" type="password" inputmode="numeric" pattern="[0-9]*" autocomplete="off" maxlength="8">
+      </div>
+      <div>
+        <label for="cp1">New PIN (4 to 8 digits)</label>
+        <input id="cp1" type="password" inputmode="numeric" pattern="[0-9]*" autocomplete="off" maxlength="8">
+      </div>
+    </div>
+    <div class="row-actions">
+      <button id="bPin">Change PIN</button>
+      <button id="bOut">Sign out of this device</button>
+    </div>
+    <div class="muted" style="margin-top:8px">Changing the PIN signs out every other computer and phone.</div>
+  </section>
+  </div>
 </main>
 <div id="toast"></div>
 
@@ -129,7 +160,51 @@ var $ = function (id) { return document.getElementById(id); };
 var state = null, lastListKey = '', settingsLoaded = false;
 
 function toast(msg) { var t = $('toast'); t.textContent = msg; t.style.display = 'block'; clearTimeout(t._h); t._h = setTimeout(function(){ t.style.display='none'; }, 3500); }
-function post(url) { return fetch(url, { method: 'POST' }).then(function (r) { if (!r.ok) return r.text().then(function (t) { throw new Error(t); }); return r; }); }
+function post(url) {
+  return fetch(url, { method: 'POST' }).then(function (r) {
+    if (r.status === 401) { showGate(); throw new Error('Please enter the PIN'); }
+    if (!r.ok) return r.text().then(function (t) { throw new Error(t); });
+    return r;
+  });
+}
+
+// ---- PIN gate ----
+var gateMode = 'login', started = false;
+function showGate() {
+  $('app').style.display = 'none';
+  $('gate').style.display = 'block';
+  $('gateErr').textContent = '';
+  fetch('/api/auth', { cache: 'no-store' }).then(function (r) { return r.json(); }).then(function (a) {
+    if (a.authed) return startApp();
+    gateMode = a.pinSet ? 'login' : 'create';
+    $('gateTitle').textContent = a.pinSet ? 'Enter PIN' : 'Create a PIN';
+    $('gateText').textContent = a.pinSet ? 'Enter the PIN to manage what’s shown on the TV.'
+      : 'Choose a 4 to 8 digit PIN. Anyone who wants to change what’s on the TV will need it.';
+    $('pin2').style.display = a.pinSet ? 'none' : 'block';
+    $('gateBtn').textContent = a.pinSet ? 'Sign in' : 'Create PIN';
+    if (a.lockedSeconds > 0) $('gateErr').textContent = 'Too many wrong PINs. Try again in ' + Math.ceil(a.lockedSeconds / 60) + ' minute(s).';
+    $('pin1').focus();
+  }).catch(function () { $('gateErr').textContent = 'Can’t reach the TV. Is it on and connected?'; });
+}
+function startApp() {
+  $('gate').style.display = 'none';
+  $('app').style.display = 'block';
+  $('pin1').value = $('pin2').value = '';
+  settingsLoaded = false; lastListKey = '';
+  refresh();
+  if (!started) { started = true; setInterval(function () { if ($('app').style.display !== 'none') refresh(); }, 5000); }
+}
+function submitGate() {
+  var p1 = $('pin1').value.trim(), p2 = $('pin2').value.trim();
+  $('gateErr').textContent = '';
+  if (!/^[0-9]{4,8}$/.test(p1)) { $('gateErr').textContent = 'The PIN must be 4 to 8 digits.'; return; }
+  if (gateMode === 'create' && p1 !== p2) { $('gateErr').textContent = 'The two PINs don’t match.'; return; }
+  var url = (gateMode === 'create' ? '/api/create-pin?pin=' : '/api/login?pin=') + encodeURIComponent(p1);
+  fetch(url, { method: 'POST' }).then(function (r) {
+    if (r.ok) return startApp();
+    return r.text().then(function (t) { $('gateErr').textContent = t; $('pin1').value = ''; $('pin1').focus(); });
+  }).catch(function () { $('gateErr').textContent = 'Can’t reach the TV.'; });
+}
 function fmtSize(b) { return b > 1e9 ? (b/1e9).toFixed(1)+' GB' : b > 1e6 ? (b/1e6).toFixed(1)+' MB' : Math.round(b/1e3)+' KB'; }
 function ago(ms) { if (!ms) return 'never'; var s = Math.round((Date.now() - ms) / 1000); return s < 60 ? s + 's ago' : Math.round(s/60) + ' min ago'; }
 
@@ -196,8 +271,10 @@ function render() {
 }
 
 function refresh() {
-  return fetch('/api/state', { cache: 'no-store' }).then(function (r) { return r.json(); })
-    .then(function (s) { state = s; render(); }).catch(function () { $('checkText').textContent = 'Can’t reach the TV. Is it on and connected?'; });
+  return fetch('/api/state', { cache: 'no-store' }).then(function (r) {
+      if (r.status === 401) { showGate(); throw new Error('auth'); }
+      return r.json(); })
+    .then(function (s) { state = s; render(); }).catch(function (e) { if (e.message !== 'auth') $('checkText').textContent = 'Can’t reach the TV. Is it on and connected?'; });
 }
 
 ['bAuto','bLive','bAnn'].forEach(function (id) {
@@ -233,13 +310,23 @@ function nextUpload() {
   var x = new XMLHttpRequest();
   x.open('POST', '/api/upload?name=' + encodeURIComponent(f.name));
   x.upload.onprogress = function (e) { if (e.lengthComputable) $('upBar').value = 100 * e.loaded / e.total; };
-  x.onload = function () { if (x.status !== 200) toast(f.name + ': ' + x.responseText); else toast('Added ' + f.name); refresh(); nextUpload(); };
+  x.onload = function () { if (x.status === 401) { queue = []; uploading = false; showGate(); return; } if (x.status !== 200) toast(f.name + ': ' + x.responseText); else toast('Added ' + f.name); refresh(); nextUpload(); };
   x.onerror = function () { toast('Upload of ' + f.name + ' failed'); nextUpload(); };
   x.send(f);
 }
 
-refresh();
-setInterval(refresh, 5000);
+$('gateBtn').onclick = submitGate;
+['pin1', 'pin2'].forEach(function (id) { $(id).onkeydown = function (e) { if (e.key === 'Enter') submitGate(); }; });
+$('bPin').onclick = function () {
+  var cur = $('cp0').value.trim(), np = $('cp1').value.trim();
+  if (!/^[0-9]{4,8}$/.test(np)) { toast('The new PIN must be 4 to 8 digits.'); return; }
+  post('/api/change-pin?current=' + encodeURIComponent(cur) + '&pin=' + encodeURIComponent(np))
+    .then(function () { $('cp0').value = $('cp1').value = ''; toast('PIN changed. Other devices will need the new PIN.'); })
+    .catch(function (e) { toast(e.message); });
+};
+$('bOut').onclick = function () { fetch('/api/logout', { method: 'POST' }).then(showGate); };
+
+showGate();
 </script>
 </body>
 </html>
