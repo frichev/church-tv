@@ -166,6 +166,19 @@ public class TvService extends Service implements WebServer.Host, Store.Listener
         return d;
     }
 
+    @Override public void showTestPattern() {
+        main.post(() -> {
+            AnnouncementView v = AnnouncementView.current;
+            if (v != null) v.showTestPattern(); else Diag.log("Test pattern: the TV screen isn't open");
+        });
+    }
+
+    @Override public String diagnostics() { return Diag.dump(); }
+
+    @Override public String versionName() {
+        try { return getPackageManager().getPackageInfo(getPackageName(), 0).versionName; } catch (Exception e) { return "?"; }
+    }
+
     @Override public String displayInfo() {
         StringBuilder sb = new StringBuilder();
         try {

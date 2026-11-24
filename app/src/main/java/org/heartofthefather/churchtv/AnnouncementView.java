@@ -44,6 +44,8 @@ public class AnnouncementView extends FrameLayout {
     private static final String TAG = "ChurchTV.Ann";
     /** Resolution photos are drawn at; reported on the control page. */
     public static volatile String photoResolution = "?";
+    /** The on-screen instance (for the control page's test-pattern button). */
+    public static volatile AnnouncementView current;
 
     private final Store store;
     private final Handler h = new Handler(Looper.getMainLooper());
@@ -85,6 +87,8 @@ public class AnnouncementView extends FrameLayout {
         panelW = panel[0];
         panelH = panel[1];
         photoResolution = panelW + "x" + panelH;
+        current = this;
+        Diag.log("Photo layer will be " + panelW + "x" + panelH + "; " + describeDisplay(ctx));
 
         videoSurf = new SurfaceView(ctx);
         videoSurf.getHolder().addCallback(new SurfaceHolder.Callback() {
@@ -106,6 +110,7 @@ public class AnnouncementView extends FrameLayout {
         photoSurf.getHolder().addCallback(new SurfaceHolder.Callback() {
             @Override public void surfaceCreated(SurfaceHolder holder) { }
             @Override public void surfaceChanged(SurfaceHolder holder, int f, int w, int hh) {
+                Diag.log("Photo layer surface is " + w + "x" + hh + " (view " + photoSurf.getWidth() + "x" + photoSurf.getHeight() + ")");
                 photoSurfaceReady = true;
                 if (pendingPhoto != null) { Runnable r = pendingPhoto; pendingPhoto = null; r.run(); }
                 else if (showing == PHOTO && currentPhoto != null) drawPhoto(currentPhoto);
@@ -124,6 +129,24 @@ public class AnnouncementView extends FrameLayout {
         black.setBackgroundColor(Color.BLACK);
         black.setAlpha(0f);
         addView(black, new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
+    }
+
+    static String describeDisplay(Context ctx) {
+        StringBuilder sb = new StringBuilder();
+        try {
+            Display d = ((WindowManager) ctx.getSystemService(Context.WINDOW_SERVICE)).getDefaultDisplay();
+            android.util.DisplayMetrics dm = new android.util.DisplayMetrics();
+            d.getRealMetrics(dm);
+            sb.append("UI ").append(dm.widthPixels).append("x").append(dm.heightPixels).append(" @").append(dm.densityDpi).append("dpi");
+            if (Build.VERSION.SDK_INT >= 23) {
+                Display.Mode m = d.getMode();
+                sb.append("; current mode ").append(m.getPhysicalWidth()).append("x").append(m.getPhysicalHeight())
+                  .append("@").append(Math.round(m.getRefreshRate())).append("; modes:");
+                for (Display.Mode x : d.getSupportedModes())
+                    sb.append(' ').append(x.getPhysicalWidth()).append("x").append(x.getPhysicalHeight()).append("@").append(Math.round(x.getRefreshRate()));
+            }
+        } catch (Throwable t) { sb.append("display info error ").append(t); }
+        return sb.toString();
     }
 
     /** The panel's physical resolution (e.g. 3840x2160), even though the app UI is 1920x1080. */
@@ -265,6 +288,7 @@ public class AnnouncementView extends FrameLayout {
         final int sw = Math.max(getWidth(), 1280), sh = Math.max(getHeight(), 720);
         decoder.execute(() -> {
             final Bitmap full = decodeToFit(f, panelW, panelH);
+            Diag.log("Photo " + f.getName() + (full == null ? ": could not decode" : ": drawing at " + full.getWidth() + "x" + full.getHeight()));
             final Bitmap small = full == null ? null : frame(full, sw, sh);
             h.post(() -> {
                 if (gen != generation) return;
@@ -373,6 +397,64 @@ public class AnnouncementView extends FrameLayout {
         return out;
     }
 
+    // ------------------------------------------------------------------ 4K test pattern
+
+    /** Shows a sharpness test for 30 seconds: 1-pixel stripes only look like stripes at true 4K. */
+    public void showTestPattern() {
+        if (!running) { Diag.log("Test pattern: announcements aren't showing right now (livestream mode?)"); return; }
+        final int gen = ++generation;
+        h.removeCallbacks(advance);
+        overlay.setVisibility(GONE);
+        black.setAlpha(0f);
+        final Bitmap pat = testPattern(panelW, panelH);
+        Runnable draw = () -> {
+            if (gen != generation) return;
+            drawPhoto(pat);
+            releasePlayer();
+            showing = PHOTO;
+            currentPhoto = null;
+            currentPhotoSmall = null;
+            Diag.log("Test pattern shown at " + panelW + "x" + panelH);
+            h.postDelayed(() -> { if (gen == generation) restart(); }, 30000);
+        };
+        if (photoSurf.getVisibility() == VISIBLE && photoSurfaceReady) draw.run();
+        else { pendingPhoto = draw; photoSurf.setVisibility(VISIBLE); }
+    }
+
+    private static Bitmap testPattern(int w, int hh) {
+        Bitmap b = Bitmap.createBitmap(w, hh, Bitmap.Config.ARGB_8888);
+        int[] row = new int[w];
+        for (int y = 0; y < hh; y++) {
+            for (int x = 0; x < w; x++) {
+                int c;
+                if (y < hh / 2) {
+                    // top: 1-pixel vertical stripes (left half) and 1-pixel horizontal stripes (right half)
+                    c = x < w / 2 ? ((x & 1) == 0 ? 0xFFFFFFFF : 0xFF000000) : ((y & 1) == 0 ? 0xFFFFFFFF : 0xFF000000);
+                } else {
+                    // bottom: 2-pixel stripes, which look like stripes even at 1080p, for comparison
+                    c = x < w / 2 ? (((x >> 1) & 1) == 0 ? 0xFFFFFFFF : 0xFF000000) : (((y >> 1) & 1) == 0 ? 0xFFFFFFFF : 0xFF000000);
+                }
+                row[x] = c;
+            }
+            b.setPixels(row, 0, w, 0, y, w, 1);
+        }
+        Canvas c = new Canvas(b);
+        Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+        p.setTextSize(hh / 22f);
+        String[] labels = {"TOP: 1-pixel stripes - should look like fine stripes up close", "BOTTOM: 2-pixel stripes (for comparison)",
+                "Drawn at " + w + "x" + hh};
+        float y = hh / 2f - hh / 9f;
+        for (String l : labels) {
+            float tw = p.measureText(l);
+            p.setColor(0xDD000000);
+            c.drawRect((w - tw) / 2 - 30, y - p.getTextSize(), (w + tw) / 2 + 30, y + p.getTextSize() * 0.4f, p);
+            p.setColor(0xFFFFD479);
+            c.drawText(l, (w - tw) / 2, y, p);
+            y += p.getTextSize() * 1.8f;
+        }
+        return b;
+    }
+
     // ------------------------------------------------------------------ video
 
     private void playVideo(final File f, final boolean single, final int gen, final Runnable onShown) {
@@ -381,6 +463,11 @@ public class AnnouncementView extends FrameLayout {
             return;
         }
         releasePlayer();
+        final int[] meta = videoMeta(f);   // {width, height, rotation} from the file itself
+        if (meta != null) {
+            int dw = meta[2] % 180 == 0 ? meta[0] : meta[1], dh = meta[2] % 180 == 0 ? meta[1] : meta[0];
+            Diag.log("Video " + f.getName() + ": file says " + meta[0] + "x" + meta[1] + " rotation " + meta[2] + " -> shows as " + dw + "x" + dh);
+        }
         final MediaPlayer p = new MediaPlayer();
         mp = p;
         final boolean[] shown = {false};
@@ -399,10 +486,13 @@ public class AnnouncementView extends FrameLayout {
             p.setDataSource(f.getAbsolutePath());
             p.setLooping(single);
             p.setScreenOnWhilePlaying(true);
-            p.setOnVideoSizeChangedListener((x, vw, vh) -> fitVideo(vw, vh));
+            p.setOnVideoSizeChangedListener((x, vw, vh) -> {
+                Diag.log("Video player reports " + vw + "x" + vh);
+                fitVideo(meta, vw, vh);
+            });
             p.setOnPreparedListener(x -> {
                 if (gen != generation) return;
-                fitVideo(x.getVideoWidth(), x.getVideoHeight());
+                fitVideo(meta, x.getVideoWidth(), x.getVideoHeight());
                 if (!paused) x.start();
                 h.postDelayed(reveal, 1500);   // fallback if the first-frame signal never comes
             });
@@ -431,6 +521,37 @@ public class AnnouncementView extends FrameLayout {
         }
     }
 
+    /** {width, height, rotation} straight from the video file, or null. */
+    static int[] videoMeta(File f) {
+        android.media.MediaMetadataRetriever r = new android.media.MediaMetadataRetriever();
+        try {
+            r.setDataSource(f.getAbsolutePath());
+            int w = Integer.parseInt(r.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH));
+            int hh = Integer.parseInt(r.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT));
+            String rs = r.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION);
+            int rot = rs == null ? 0 : ((Integer.parseInt(rs) % 360) + 360) % 360;
+            return new int[]{w, hh, rot};
+        } catch (Throwable t) {
+            return null;
+        } finally {
+            try { r.release(); } catch (Throwable ignored) { }
+        }
+    }
+
+    /**
+     * Shape the video layer from the file's own dimensions and rotation (some TV players report
+     * the size swapped, which squeezed landscape video into a tall box). Falls back to what
+     * the player reports.
+     */
+    private void fitVideo(int[] meta, int pw, int ph) {
+        if (meta != null && meta[0] > 0 && meta[1] > 0) {
+            boolean sideways = meta[2] % 180 != 0;
+            fitVideo(sideways ? meta[1] : meta[0], sideways ? meta[0] : meta[1]);
+        } else {
+            fitVideo(pw, ph);
+        }
+    }
+
     /** Size the video layer to the video's shape (letterbox) instead of stretching it. */
     private void fitVideo(int vw, int vh) {
         int W = getWidth(), H = getHeight();
@@ -443,6 +564,7 @@ public class AnnouncementView extends FrameLayout {
         lp.height = hh;
         lp.gravity = Gravity.CENTER;
         videoSurf.setLayoutParams(lp);
+        Diag.log("Video area set to " + w + "x" + hh + " of " + W + "x" + H);
     }
 
     // ------------------------------------------------------------------ snapshot for dissolves

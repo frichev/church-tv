@@ -151,6 +151,17 @@
     </div>
     <div class="muted" style="margin-top:8px">Changing the PIN signs out every other computer and phone.</div>
   </section>
+
+  <section class="card">
+    <h2>Picture quality check</h2>
+    <div class="muted">Shows a sharpness test on the TV for 30 seconds. Stand close to the screen: if the <b>top half</b> shows fine stripes (like the bottom half, only finer), the TV is showing true 4K. If the top half looks like flat grey, pictures are being reduced to 1080p.</div>
+    <div class="row-actions">
+      <button id="bPattern">Show 4K test pattern</button>
+      <button id="bDiag">Show diagnostics</button>
+      <button id="bCopy" style="display:none">Copy diagnostics</button>
+    </div>
+    <pre id="diag" style="display:none; white-space:pre-wrap; font-size:12px; background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:10px; max-height:360px; overflow:auto"></pre>
+  </section>
   </div>
 </main>
 <div id="toast"></div>
@@ -323,6 +334,21 @@ $('bPin').onclick = function () {
   post('/api/change-pin?current=' + encodeURIComponent(cur) + '&pin=' + encodeURIComponent(np))
     .then(function () { $('cp0').value = $('cp1').value = ''; toast('PIN changed. Other devices will need the new PIN.'); })
     .catch(function (e) { toast(e.message); });
+};
+$('bPattern').onclick = function () { post('/api/test-pattern').then(function () { toast('Test pattern on the TV for 30 seconds'); }).catch(function (e) { toast(e.message); }); };
+$('bDiag').onclick = function () {
+  fetch('/api/diag', { cache: 'no-store' }).then(function (r) {
+    if (r.status === 401) { showGate(); throw new Error('auth'); }
+    return r.text();
+  }).then(function (t) {
+    $('diag').textContent = t; $('diag').style.display = 'block'; $('bCopy').style.display = 'inline-block';
+  }).catch(function () {});
+};
+$('bCopy').onclick = function () {
+  var t = $('diag').textContent;
+  var done = function () { toast('Copied. Paste it into your message to Claude.'); };
+  if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(t).then(done);
+  else { var r = document.createRange(); r.selectNodeContents($('diag')); var sel = getSelection(); sel.removeAllRanges(); sel.addRange(r); document.execCommand('copy'); done(); }
 };
 $('bOut').onclick = function () { fetch('/api/logout', { method: 'POST' }).then(showGate); };
 

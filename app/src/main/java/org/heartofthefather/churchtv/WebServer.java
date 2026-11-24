@@ -40,6 +40,9 @@ public final class WebServer {
         String mediaDims(java.io.File f);
         /** Human-readable description of the TV's screen. */
         String displayInfo();
+        void showTestPattern();
+        String diagnostics();
+        String versionName();
     }
 
     private static final String TAG = "ChurchTV.Web";
@@ -253,6 +256,10 @@ public final class WebServer {
                 json(out, st.toString());
                 return;
             }
+            if (path.equals("/api/diag")) {
+                text(out, 200, "Church TV " + host.versionName() + "\n" + host.displayInfo() + "\n\n" + host.diagnostics());
+                return;
+            }
             if (path.startsWith("/media/")) { media(out, path.substring(7), headers.get("range"), head); return; }
             text(out, 404, "Not found");
             return;
@@ -292,6 +299,7 @@ public final class WebServer {
                 return;
             }
             case "/api/check": drain(headers, in); host.checkLiveNow(); ok(out); return;
+            case "/api/test-pattern": drain(headers, in); host.showTestPattern(); ok(out); return;
             case "/api/reload": drain(headers, in); host.reloadPlayer(); ok(out); return;
             default: drain(headers, in); text(out, 404, "Not found");
         }
