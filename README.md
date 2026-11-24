@@ -34,7 +34,7 @@ Go to **Settings → My Fire TV → About → Network**. Write down the **IP add
 **Option A — from the Mac (easiest).** Open **Terminal** on the Mac and paste the two lines below, putting your TV's IP address at the end:
 
 ```bash
-curl -fsSL -o setup-tv.sh https://raw.githubusercontent.com/__GITHUB_REPO__/main/tools/setup-tv.sh
+curl -fsSL -o setup-tv.sh https://raw.githubusercontent.com/frichev/church-tv/main/tools/setup-tv.sh
 ```
 
 ```bash
@@ -48,7 +48,7 @@ The script installs the app, turns off the screensaver, de-bloats the TV, and op
 **Option B — with the Downloader app on the TV.**
 1. On the TV, search for and install **Downloader** (orange icon, by AFTVnews).
 2. In **Developer Options**, open **Install unknown apps** and turn **Downloader** **ON**.
-3. Open Downloader, type `https://github.com/__GITHUB_REPO__/raw/main/ChurchTV.apk`, press **Go**, then **Install**.
+3. Open Downloader, type `https://github.com/frichev/church-tv/raw/main/ChurchTV.apk`, press **Go**, then **Install**.
 4. Open **Church TV** once from **Your Apps**. Running the Mac script afterward is optional; it does the de-bloating.
 
 ### 5. Put the tile up front (optional)

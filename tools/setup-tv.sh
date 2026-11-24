@@ -15,7 +15,7 @@
 
 set -u
 TV_IP="${1:-}"
-REPO="__GITHUB_REPO__"
+REPO="frichev/church-tv"
 PKG="org.heartofthefather.churchtv"
 APK_URL="https://github.com/$REPO/raw/main/ChurchTV.apk"
 HERE="$(cd "$(dirname "$0")" && pwd)"
