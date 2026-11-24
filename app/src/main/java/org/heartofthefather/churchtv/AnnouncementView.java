@@ -293,22 +293,56 @@ public class AnnouncementView extends FrameLayout {
             h.post(() -> {
                 if (gen != generation) return;
                 if (full == null) { Log.w(TAG, "can't show " + f.getName()); h.postDelayed(advance, 1000); return; }
-                Runnable draw = () -> {
-                    if (gen != generation) return;
-                    drawPhoto(full);
-                    releasePlayer();                       // photo now covers the video layer
-                    Bitmap old = currentPhoto;
-                    currentPhoto = full;
-                    currentPhotoSmall = small;
-                    showing = PHOTO;
-                    if (old != null && old != full) old.recycle();
-                    onShown.run();
+                displayBitmap(full, small, gen, onShown, () -> {
                     if (!single) h.postDelayed(advance, store.imageSeconds() * 1000L);
-                };
-                if (photoSurf.getVisibility() == VISIBLE && photoSurfaceReady) draw.run();
-                else { pendingPhoto = draw; photoSurf.setVisibility(VISIBLE); }
+                });
             });
         });
+    }
+
+    /** Puts a full-resolution picture on the 4K photo layer (used for photos and the test pattern). */
+    private void displayBitmap(final Bitmap full, final Bitmap small, final int gen,
+                               final Runnable onShown, final Runnable afterShown) {
+        Runnable draw = () -> {
+            if (gen != generation) return;
+            drawPhoto(full);
+            releasePlayer();                       // photo now covers the video layer
+            Bitmap old = currentPhoto;
+            currentPhoto = full;
+            currentPhotoSmall = small;
+            showing = PHOTO;
+            if (old != null && old != full) old.recycle();
+            onShown.run();
+            afterShown.run();
+            // Ask the window to redraw so the photo layer's "hole" is punched through for sure.
+            invalidate();
+            requestLayout();
+            h.postDelayed(this::checkPhotoLayer, 1500);
+        };
+        if (photoSurf.getVisibility() == VISIBLE && photoSurfaceReady) draw.run();
+        else { pendingPhoto = draw; photoSurf.setVisibility(VISIBLE); }
+    }
+
+    /** Diagnostics: read back the photo layer and the view state, so we can tell why a picture isn't visible. */
+    private void checkPhotoLayer() {
+        final String state = "photo layer visible=" + (photoSurf.getVisibility() == VISIBLE) + " shown=" + photoSurf.isShown()
+                + " size=" + photoSurf.getWidth() + "x" + photoSurf.getHeight()
+                + " overlay=" + (overlay.getVisibility() == VISIBLE ? "on a=" + overlay.getAlpha() : "off")
+                + " black a=" + black.getAlpha() + " showing=" + (showing == PHOTO ? "photo" : showing == VIDEO ? "video" : "none");
+        if (Build.VERSION.SDK_INT < 24 || photoSurf.getVisibility() != VISIBLE || !photoSurfaceReady) { Diag.log(state); return; }
+        try {
+            final Bitmap rb = Bitmap.createBitmap(192, 108, Bitmap.Config.ARGB_8888);
+            android.view.PixelCopy.request(photoSurf, rb, result -> {
+                if (result != android.view.PixelCopy.SUCCESS) { Diag.log(state + " | readback failed (" + result + ")"); return; }
+                long sum = 0; int lit = 0;
+                int[] px = new int[192 * 108];
+                rb.getPixels(px, 0, 192, 0, 0, 192, 108);
+                for (int c : px) { int l = ((c >> 16) & 255) + ((c >> 8) & 255) + (c & 255); sum += l; if (l > 60) lit++; }
+                Diag.log(state + " | layer content: avg brightness " + (sum / px.length / 3) + "/255, " + (lit * 100 / px.length) + "% lit");
+            }, h);
+        } catch (Throwable t) {
+            Diag.log(state + " | readback error " + t);
+        }
     }
 
     /** Draws the photo centered, letterboxed in black, at the surface's full (4K) resolution. */
@@ -404,21 +438,33 @@ public class AnnouncementView extends FrameLayout {
         if (!running) { Diag.log("Test pattern: announcements aren't showing right now (livestream mode?)"); return; }
         final int gen = ++generation;
         h.removeCallbacks(advance);
-        overlay.setVisibility(GONE);
+        black.animate().cancel();
         black.setAlpha(0f);
-        final Bitmap pat = testPattern(panelW, panelH);
-        Runnable draw = () -> {
-            if (gen != generation) return;
-            drawPhoto(pat);
-            releasePlayer();
-            showing = PHOTO;
-            currentPhoto = null;
-            currentPhotoSmall = null;
-            Diag.log("Test pattern shown at " + panelW + "x" + panelH);
-            h.postDelayed(() -> { if (gen == generation) restart(); }, 30000);
-        };
-        if (photoSurf.getVisibility() == VISIBLE && photoSurfaceReady) draw.run();
-        else { pendingPhoto = draw; photoSurf.setVisibility(VISIBLE); }
+        final int sw = Math.max(getWidth(), 1280), sh = Math.max(getHeight(), 720);
+        decoder.execute(() -> {
+            final Bitmap pat = testPattern(panelW, panelH);
+            final Bitmap small = frame(pat, sw, sh);
+            h.post(() -> {
+                if (gen != generation) return;
+                // Same path a photo takes (dissolve over the outgoing picture), which is known to show.
+                snapshot(snap -> {
+                    if (gen != generation) return;
+                    overlay.animate().cancel();
+                    if (snap != null) overlay.setImageBitmap(snap);
+                    else overlay.setImageDrawable(new android.graphics.drawable.ColorDrawable(Color.BLACK));
+                    overlay.setAlpha(1f);
+                    overlay.setVisibility(VISIBLE);
+                    displayBitmap(pat, small, gen, () -> overlay.animate().alpha(0f).setDuration(600).withEndAction(() -> {
+                        if (gen != generation) return;
+                        overlay.setVisibility(GONE);
+                        overlay.setImageDrawable(null);
+                    }), () -> {
+                        Diag.log("Test pattern shown at " + panelW + "x" + panelH);
+                        h.postDelayed(() -> { if (gen == generation) restart(); }, 30000);
+                    });
+                });
+            });
+        });
     }
 
     private static Bitmap testPattern(int w, int hh) {
