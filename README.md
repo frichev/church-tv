@@ -43,13 +43,13 @@ bash setup-tv.sh 192.168.1.50
 
 When the TV shows **"Allow USB debugging?"**, tick **Always allow from this computer** and choose **OK**.
 
-The script installs the app, gives it permission to come on screen by itself, turns off the screensaver, de-bloats the TV, and opens Church TV. **This step is required even if you use Option B**, because Fire TV has no menu for the "come on screen by itself" permission.
+The script installs the app, turns off the screensaver, de-bloats the TV, and opens Church TV. (On newer Fire OS 8 TVs it also grants a permission Church TV needs to come on screen by itself. Your Fire OS 7 TV doesn't need it.)
 
 **Option B — with the Downloader app on the TV.**
 1. On the TV, search for and install **Downloader** (orange icon, by AFTVnews).
 2. In **Developer Options**, open **Install unknown apps** and turn **Downloader** **ON**.
 3. Open Downloader, type `https://github.com/__GITHUB_REPO__/raw/main/ChurchTV.apk`, press **Go**, then **Install**.
-4. Still do the Mac step in Option A afterward.
+4. Open **Church TV** once from **Your Apps**. Running the Mac script afterward is optional; it does the de-bloating.
 
 ### 5. Put the tile up front (optional)
 Press **Home**, go to **Your Apps**, highlight **Church TV**, press **Menu (☰) → Move to front**.
