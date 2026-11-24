@@ -26,6 +26,7 @@ public class MainActivity extends Activity {
     private static final String PLAYER_URL = "http://127.0.0.1:" + WebServer.PORT + "/player";
     private final Handler main = new Handler(Looper.getMainLooper());
     private WebView web;
+    private AnnouncementView announcements;
     private long lastHandOffAt = 0;
 
     @Override protected void onCreate(Bundle savedInstanceState) {
@@ -35,8 +36,16 @@ public class MainActivity extends Activity {
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
                 | WindowManager.LayoutParams.FLAG_FULLSCREEN);
 
+        // Native announcement player underneath; the (transparent) web page on top handles
+        // the livestream, welcome screen and on-screen messages.
+        android.widget.FrameLayout root = new android.widget.FrameLayout(this);
+        root.setBackgroundColor(Color.BLACK);
+        announcements = new AnnouncementView(this, Store.get(this));
+        announcements.setVisibility(View.INVISIBLE);
+        root.addView(announcements, new android.widget.FrameLayout.LayoutParams(-1, -1));
+
         web = new WebView(this);
-        web.setBackgroundColor(Color.BLACK);
+        web.setBackgroundColor(Color.TRANSPARENT);
         web.setFocusable(false);
         WebSettings s = web.getSettings();
         s.setJavaScriptEnabled(true);
@@ -59,7 +68,8 @@ public class MainActivity extends Activity {
                 if (url != null && url.startsWith("http://127.0.0.1")) main.postDelayed(() -> web.loadUrl(PLAYER_URL), 2000);
             }
         });
-        setContentView(web);
+        root.addView(web, new android.widget.FrameLayout.LayoutParams(-1, -1));
+        setContentView(root);
         hideSystemUi();
         main.postDelayed(() -> web.loadUrl(PLAYER_URL), 600);
 
@@ -74,6 +84,7 @@ public class MainActivity extends Activity {
     @Override protected void onResume() {
         super.onResume();
         hideSystemUi();
+        if (announcements != null) announcements.resume();
         if (web != null) {
             web.onResume();
             web.evaluateJavascript("window.onAppResumed && window.onAppResumed()", null);
@@ -82,6 +93,7 @@ public class MainActivity extends Activity {
 
     @Override protected void onPause() {
         // Keep playing only while visible; the YouTube app takes the audio when it is in front.
+        if (announcements != null) announcements.pause();
         if (web != null) {
             web.evaluateJavascript("window.onAppPaused && window.onAppPaused()", null);
             web.onPause();
@@ -90,6 +102,7 @@ public class MainActivity extends Activity {
     }
 
     @Override protected void onDestroy() {
+        if (announcements != null) announcements.release();
         if (web != null) web.destroy();
         super.onDestroy();
     }
@@ -142,6 +155,11 @@ public class MainActivity extends Activity {
     }
 
     private final class Bridge {
+        /** true = play the announcement loop natively underneath the page. */
+        @JavascriptInterface public void setAnnouncements(final boolean on) {
+            main.post(() -> { if (announcements != null) announcements.setActive(on); });
+        }
+
         @JavascriptInterface public void openYouTube(final String videoId) {
             main.post(() -> openInYouTubeApp(videoId));
         }

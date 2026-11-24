@@ -163,7 +163,9 @@ public final class WebServer {
                 Integer secs = null;
                 try { if (q.containsKey("imageSeconds")) secs = Integer.parseInt(q.get("imageSeconds")); } catch (NumberFormatException ignored) { }
                 String oldChannel = store.channel();
-                store.updateSettings(q.get("channel"), secs, q.get("playback"));
+                Integer tms = null;
+                try { if (q.containsKey("transitionMs")) tms = Integer.parseInt(q.get("transitionMs")); } catch (NumberFormatException ignored) { }
+                store.updateSettings(q.get("channel"), secs, q.get("playback"), q.get("transition"), tms);
                 if (!oldChannel.equals(store.channel())) host.checkLiveNow();
                 ok(out);
                 return;
@@ -187,7 +189,7 @@ public final class WebServer {
     private void upload(String rawName, Map<String, String> headers, InputStream in, OutputStream out) throws IOException {
         String name = Store.sanitize(rawName);
         long len = parseLong(headers.get("content-length"), -1);
-        if (name == null) { drain(headers, in); text(out, 400, "Unsupported file type. Use MP4/WebM/MOV videos or JPG/PNG/GIF/WebP images."); return; }
+        if (name == null) { drain(headers, in); text(out, 400, "Unsupported file type. Use MP4/MOV videos or JPG/PNG/HEIC images."); return; }
         if (len <= 0) { text(out, 411, "Missing Content-Length"); return; }
         File dir = store.mediaDir();
         if (dir.getUsableSpace() < len + 200L * 1024 * 1024) {
@@ -280,6 +282,8 @@ public final class WebServer {
         if (n.endsWith(".gif")) return "image/gif";
         if (n.endsWith(".webp")) return "image/webp";
         if (n.endsWith(".bmp")) return "image/bmp";
+        if (n.endsWith(".heic")) return "image/heic";
+        if (n.endsWith(".heif")) return "image/heif";
         return "image/jpeg";
     }
 

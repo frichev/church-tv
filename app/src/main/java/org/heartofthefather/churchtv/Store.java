@@ -60,7 +60,20 @@ public final class Store {
     /** "inapp" = play the stream inside this app; "youtubeapp" = hand off to the YouTube app. */
     public synchronized String playback() { return prefs.getString("playback", "inapp"); }
 
+    /** "dissolve" (default), "black" (fade through black) or "none". */
+    public synchronized String transition() { return prefs.getString("transition", "dissolve"); }
+
+    public synchronized int transitionMs() { return prefs.getInt("transitionMs", 1000); }
+
     public synchronized void updateSettings(String channel, Integer imageSeconds, String playback) {
+        updateSettings(channel, imageSeconds, playback, null, null);
+    }
+
+    public synchronized void updateSettings(String channel, Integer imageSeconds, String playback,
+                                            String transition, Integer transitionMs) {
+        if ("dissolve".equals(transition) || "black".equals(transition) || "none".equals(transition))
+            prefs.edit().putString("transition", transition).apply();
+        if (transitionMs != null) prefs.edit().putInt("transitionMs", Math.max(0, Math.min(5000, transitionMs))).apply();
         SharedPreferences.Editor e = prefs.edit();
         if (channel != null) {
             String c = channel.trim();
@@ -135,7 +148,7 @@ public final class Store {
     public static String typeOf(String name) {
         String n = name.toLowerCase(Locale.US);
         if (n.endsWith(".jpg") || n.endsWith(".jpeg") || n.endsWith(".png") || n.endsWith(".gif")
-                || n.endsWith(".webp") || n.endsWith(".bmp")) return "image";
+                || n.endsWith(".webp") || n.endsWith(".bmp") || n.endsWith(".heic") || n.endsWith(".heif")) return "image";
         if (n.endsWith(".mp4") || n.endsWith(".m4v") || n.endsWith(".webm") || n.endsWith(".mkv")
                 || n.endsWith(".mov") || n.endsWith(".3gp")) return "video";
         return null;
@@ -221,6 +234,8 @@ public final class Store {
             o.put("channel", channel());
             o.put("imageSeconds", imageSeconds());
             o.put("playback", playback());
+            o.put("transition", transition());
+            o.put("transitionMs", transitionMs());
             o.put("lastCheck", lastCheck);
             o.put("lastCheckResult", lastCheckResult);
             o.put("controlUrl", controlUrl);

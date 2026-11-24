@@ -76,8 +76,8 @@
   <section class="card">
     <h2>Announcements</h2>
     <div id="drop">Drop videos or images here, or <u>click to choose files</u><br>
-      <span class="muted">MP4 video works best · JPG / PNG images</span></div>
-    <input id="file" type="file" multiple accept="video/*,image/*" style="display:none">
+      <span class="muted">Videos and photos straight from a phone are fine (MP4, MOV, JPG, PNG, HEIC)</span></div>
+    <input id="file" type="file" multiple accept="video/*,image/*,.heic,.heif" style="display:none">
     <div id="upWrap" style="display:none"><div class="muted" id="upText"></div><progress id="upBar" max="100" value="0"></progress></div>
     <ul id="list" style="margin-top:12px"></ul>
     <div class="muted" id="space" style="margin-top:8px"></div>
@@ -95,6 +95,25 @@
         <select id="pb">
           <option value="inapp">Inside Church TV (recommended)</option>
           <option value="youtubeapp">In the YouTube app</option>
+        </select>
+      </div>
+    </div>
+    <div class="grid2">
+      <div>
+        <label for="tr">Transition between announcements</label>
+        <select id="tr">
+          <option value="dissolve">Cross dissolve</option>
+          <option value="black">Fade through black</option>
+          <option value="none">None (cut)</option>
+        </select>
+      </div>
+      <div>
+        <label for="trms">Transition length</label>
+        <select id="trms">
+          <option value="500">Quick (0.5 s)</option>
+          <option value="1000">Normal (1 s)</option>
+          <option value="1500">Slow (1.5 s)</option>
+          <option value="2500">Very slow (2.5 s)</option>
         </select>
       </div>
     </div>
@@ -129,7 +148,8 @@ function render() {
   $('space').textContent = 'Free space on TV: ' + fmtSize(s.freeBytes);
 
   if (!settingsLoaded) {
-    $('secs').value = s.imageSeconds; $('pb').value = s.playback; $('chan').value = '@' + s.channel;
+    $('secs').value = s.imageSeconds; $('pb').value = s.playback;
+    $('tr').value = s.transition; $('trms').value = String(s.transitionMs); $('chan').value = '@' + s.channel;
     settingsLoaded = true;
   }
 
@@ -145,6 +165,12 @@ function render() {
     if (it.type === 'image') { th = document.createElement('img'); th.src = src; th.loading = 'lazy'; }
     else { th = document.createElement('video'); th.src = src + '#t=1'; th.preload = 'metadata'; th.muted = true; }
     th.className = 'thumb';
+    th.onerror = function () {   // e.g. HEIC photos in browsers that can't preview them
+      var ph = document.createElement('div'); ph.className = 'thumb';
+      ph.style.cssText = 'display:flex;align-items:center;justify-content:center;color:#98a2b3;font-size:12px';
+      ph.textContent = it.type === 'image' ? 'Photo' : 'Video';
+      if (th.parentNode) th.parentNode.replaceChild(ph, th);
+    };
     var meta = document.createElement('div'); meta.className = 'meta';
     meta.innerHTML = '<div class="name"></div><div class="muted"></div>';
     meta.firstChild.textContent = (i + 1) + '. ' + it.name;
@@ -171,7 +197,8 @@ $('bCheck').onclick = function () { post('/api/check').then(function () { toast(
 $('bReload').onclick = function () { post('/api/reload').then(function () { toast('TV screen restarted'); }); };
 $('bSave').onclick = function () {
   var q = '?imageSeconds=' + encodeURIComponent($('secs').value) + '&playback=' + encodeURIComponent($('pb').value) +
-          '&channel=' + encodeURIComponent($('chan').value);
+          '&channel=' + encodeURIComponent($('chan').value) +
+          '&transition=' + encodeURIComponent($('tr').value) + '&transitionMs=' + encodeURIComponent($('trms').value);
   post('/api/settings' + q).then(function () { settingsLoaded = false; lastListKey = ''; return refresh(); }).then(function(){ toast('Settings saved'); })
     .catch(function (e) { toast(e.message); });
 };

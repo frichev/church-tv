@@ -53,6 +53,14 @@
   var $ = function (id) { return document.getElementById(id); };
   var img = $('img'), vid = $('vid');
   var state = null, paused = false;
+  // On the TV, announcements play in the app's native player underneath this (transparent) page.
+  var NATIVE = !!(window.ChurchTV && window.ChurchTV.setAnnouncements);
+  function setNative(on) {
+    if (NATIVE) window.ChurchTV.setAnnouncements(on);
+    var bg = (NATIVE && on) ? 'transparent' : '#000';
+    document.documentElement.style.background = bg;
+    document.body.style.background = bg;
+  }
 
   // ---------------- announcements loop ----------------
   var items = [], playlistKey = '', idx = -1, timer = null, loopRunning = false;
@@ -197,10 +205,16 @@
     $('banner').style.display = (state.mode === 'live' && !state.videoId) ? 'block' : 'none';
 
     if (liveWithVideo) {
+      setNative(false);
       if (loopRunning) stopLoop();
       playLive(state.videoId);
     } else {
       if (ytId || $('handoff').style.display === 'flex') stopLive();
+      if (NATIVE) {
+        setNative(true);
+        $('welcome').style.display = items.length ? 'none' : 'flex';
+        return;
+      }
       if (paused) return;
       if (!loopRunning || changed) startLoop(changed);
     }
@@ -243,7 +257,7 @@
     paused = false;
     if (!was) return;
     try { if (yt && yt.playVideo) yt.playVideo(); } catch (e) {}
-    if (state && !(state.mode === 'live' && state.videoId)) startLoop(false);
+    if (!NATIVE && state && !(state.mode === 'live' && state.videoId)) startLoop(false);
     poll();
   };
 
